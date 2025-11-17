@@ -1,0 +1,120 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradePilot - Universal IV Rank & Percentile
+
+//@version=6
+indicator("IV Rank & Percentile (Universal)", overlay=false, format=format.percent)
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════
+
+len = input.int(252, "Lookback Length", minval=20, maxval=500)
+hvWindow = input.int(21, "HV Window", minval=5, maxval=100)
+
+showRank = input.bool(true, "Show IV Rank")
+showPercentile = input.bool(true, "Show IV Percentile")
+showZones = input.bool(true, "Show Zones")
+
+colorRank = input.color(#2962FF, "IV Rank Color")
+colorPercentile = input.color(#00E676, "IV Percentile Color")
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATE HISTORICAL VOLATILITY
+// ═══════════════════════════════════════════════════════════════════
+
+calcHV() =>
+    if bar_index < hvWindow
+        float(na)
+    else
+        sumSq = 0.0
+        mean = 0.0
+        for i = 0 to hvWindow - 1
+            mean := mean + math.log(close[i] / close[i + 1])
+        mean := mean / hvWindow
+        for i = 0 to hvWindow - 1
+            ret = math.log(close[i] / close[i + 1])
+            sumSq := sumSq + math.pow(ret - mean, 2)
+        variance = sumSq / hvWindow
+        stdDev = math.sqrt(variance)
+        annualizedVol = stdDev * math.sqrt(252) * 100
+        annualizedVol
+
+hv = calcHV()
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATE RANK AND PERCENTILE
+// ═══════════════════════════════════════════════════════════════════
+
+validData = bar_index >= hvWindow + len
+
+// Calculate lowest and highest OUTSIDE the function
+hvLow = ta.lowest(hv[1], len)
+hvHigh = ta.highest(hv[1], len)
+
+// Calculate IV Rank
+rank = if validData and not na(hv) and not na(hvLow) and not na(hvHigh) and hvHigh != hvLow
+    (hv - hvLow) / (hvHigh - hvLow) * 100
+else
+    float(na)
+
+// Calculate IV Percentile
+calcPercentile() =>
+    if validData and not na(hv)
+        days = 0
+        for i = 1 to len
+            if not na(hv[i]) and hv[i] < hv
+                days := days + 1
+        (days / len) * 100
+    else
+        float(na)
+
+percentile = calcPercentile()
+
+// ═══════════════════════════════════════════════════════════════════
+// ZONES
+// ═══════════════════════════════════════════════════════════════════
+
+bgcolor(showZones and not na(rank) and rank > 75 ? color.new(color.red, 95) : na)
+bgcolor(showZones and not na(rank) and rank < 25 ? color.new(color.green, 95) : na)
+
+hline(0, "0%", color.gray, linestyle=hline.style_dotted)
+hline(25, "25%", color.new(color.green, 70), linestyle=hline.style_dotted)
+hline(50, "50%", color.gray, linestyle=hline.style_dashed)
+hline(75, "75%", color.new(color.red, 70), linestyle=hline.style_dotted)
+hline(100, "100%", color.gray, linestyle=hline.style_dotted)
+
+// ═══════════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════════
+
+plot(showRank ? rank : na, "IV Rank", colorRank, 2)
+plot(showPercentile ? percentile : na, "IV Percentile", colorPercentile, 2)
+
+// ═══════════════════════════════════════════════════════════════════
+// LABELS
+// ═══════════════════════════════════════════════════════════════════
+
+if barstate.islast and not na(rank)
+    label.new(bar_index, 50, 
+         "HV: " + str.tostring(hv, "#.##") + "%\n" +
+         "Rank: " + str.tostring(rank, "#.#") + "%\n" +
+         "Percentile: " + str.tostring(percentile, "#.#") + "%",
+         style=label.style_label_left,
+         color=color.new(color.gray, 80),
+         textcolor=color.white)
+
+if barstate.islast and na(rank)
+    label.new(bar_index, 50,
+         "⚠️ Not enough data\nNeed " + str.tostring(hvWindow + len) + " bars",
+         style=label.style_label_left,
+         color=color.new(color.orange, 70),
+         textcolor=color.white)
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════
+
+alertcondition(rank > 75, "High IV Rank", "IV Rank > 75% - Expensive!")
+alertcondition(percentile > 75, "High IV Percentile", "IV Percentile > 75% - Sell!")
+alertcondition(rank < 25, "Low IV Rank", "IV Rank < 25% - Cheap!")
+alertcondition(percentile < 25, "Low IV Percentile", "IV Percentile < 25% - Buy!")

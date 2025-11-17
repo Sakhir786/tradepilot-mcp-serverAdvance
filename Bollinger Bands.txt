@@ -1,0 +1,373 @@
+//@version=6
+indicator("TradePilot BBSR Pro", "TP-BBSR", overlay = true, max_labels_count = 500)
+
+// ============================================================================
+// BOLLINGER BANDS SETTINGS
+// ============================================================================
+bbLength = input.int(20, 'BB Length', minval = 1)
+bbMult = input.float(2.0, 'BB Multiplier', minval = 0.1, step = 0.1)
+
+// ============================================================================
+// STOCHASTIC RSI SETTINGS
+// ============================================================================
+rsiLength = input.int(14, 'RSI Length', minval = 1)
+stochLength = input.int(14, 'Stochastic Length', minval = 1)
+smoothK = input.int(3, 'Smooth K', minval = 1)
+smoothD = input.int(3, 'Smooth D', minval = 1)
+
+// ============================================================================
+// SIGNAL THRESHOLDS
+// ============================================================================
+upperLimit = input.int(90, 'Overbought Level', minval = 50, maxval = 100)
+lowerLimit = input.int(10, 'Oversold Level', minval = 0, maxval = 50)
+
+// ============================================================================
+// QUALITY THRESHOLDS
+// ============================================================================
+excellentThreshold = input.int(85, 'Excellent Quality', minval = 70, maxval = 100)
+goodThreshold = input.int(70, 'Good Quality', minval = 50, maxval = 85)
+marginalThreshold = input.int(60, 'Marginal Quality', minval = 40, maxval = 70)
+
+// ============================================================================
+// VISUAL SETTINGS
+// ============================================================================
+showSignals = input.bool(true, 'Show Signals', group = 'Visual')
+showBB = input.bool(true, 'Show Bollinger Bands', group = 'Visual')
+showFibLevels = input.bool(true, 'Show Fib TP Levels', group = 'Visual')
+showDashboard = input.bool(true, 'Show Dashboard', group = 'Visual')
+
+// ============================================================================
+// BOLLINGER BANDS CALCULATION
+// ============================================================================
+bbBasis = ta.sma(close, bbLength)
+bbDev = ta.stdev(close, bbLength) * bbMult
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// BB Width for regime detection
+bbWidth = (bbUpper - bbLower) / bbBasis * 100
+bbWidthSMA = ta.sma(bbWidth, 50)
+bbSqueezed = bbWidth < bbWidthSMA * 0.7
+bbExpanded = bbWidth > bbWidthSMA * 1.3
+
+// ============================================================================
+// FIBONACCI LEVELS (For TP)
+// ============================================================================
+atr = ta.atr(bbLength)
+fib1 = atr * 1.618
+fib2 = atr * 2.618
+fib3 = atr * 4.236
+
+upperFib1 = bbBasis + fib1
+upperFib2 = bbBasis + fib2
+upperFib3 = bbBasis + fib3
+lowerFib1 = bbBasis - fib1
+lowerFib2 = bbBasis - fib2
+lowerFib3 = bbBasis - fib3
+
+// ============================================================================
+// STOCHASTIC RSI CALCULATION
+// ============================================================================
+rsi = ta.rsi(close, rsiLength)
+stochRSI = ta.stoch(rsi, rsi, rsi, stochLength)
+k = ta.sma(stochRSI, smoothK)
+d = ta.sma(k, smoothD)
+
+stochOversold = k < lowerLimit and d < lowerLimit
+stochOverbought = k > upperLimit and d > upperLimit
+
+// ============================================================================
+// CORE BBSR SIGNALS
+// ============================================================================
+bullBase = close[1] < bbLower[1] and close > bbLower and stochOversold
+bearBase = close[1] > bbUpper[1] and close < bbUpper and stochOverbought
+
+// ============================================================================
+// REGIME DETECTION (CRITICAL FILTER)
+// ============================================================================
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+
+ranging = adx < 25
+weakTrend = adx >= 25 and adx < 35
+trending = adx >= 35
+
+regimeText = ranging ? 'RANGING' : weakTrend ? 'WEAK TREND' : 'TRENDING'
+regimeColor = ranging ? color.lime : weakTrend ? color.yellow : color.red
+
+regimeOK = ranging or weakTrend
+
+// ============================================================================
+// DIVERGENCE DETECTION
+// ============================================================================
+lookbackDiv = 5
+
+var float bullDivPrice = na
+var float bullDivRSI = na
+var float bearDivPrice = na
+var float bearDivRSI = na
+
+priceLow = ta.lowest(low, lookbackDiv)
+priceHigh = ta.highest(high, lookbackDiv)
+rsiLow = ta.lowest(rsi, lookbackDiv)
+rsiHigh = ta.highest(rsi, lookbackDiv)
+
+bullDiv = false
+bearDiv = false
+
+if low == priceLow and rsi == rsiLow
+    if not na(bullDivPrice) and low < bullDivPrice and rsi > bullDivRSI
+        bullDiv := true
+    bullDivPrice := low
+    bullDivRSI := rsi
+
+if high == priceHigh and rsi == rsiHigh
+    if not na(bearDivPrice) and high > bearDivPrice and rsi < bearDivRSI
+        bearDiv := true
+    bearDivPrice := high
+    bearDivRSI := rsi
+
+// ============================================================================
+// VOLUME ANALYSIS
+// ============================================================================
+avgVolume = ta.sma(volume, 20)
+volRatio = volume / avgVolume
+volumeConfirmed = volRatio >= 1.5
+
+// ============================================================================
+// HIGHER TIMEFRAME ALIGNMENT
+// ============================================================================
+htfTF = timeframe.period == '1' ? '5' : timeframe.period == '5' ? '15' : timeframe.period == '15' ? '60' : timeframe.period == '60' ? '240' : 'D'
+
+htfClose = request.security(syminfo.tickerid, htfTF, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+htfBasis = request.security(syminfo.tickerid, htfTF, bbBasis, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+htfBullish = htfClose > htfBasis
+htfBearish = htfClose < htfBasis
+
+// ============================================================================
+// SUPPORT/RESISTANCE CONTEXT
+// ============================================================================
+pivotLookback = 10
+pivotHigh = ta.pivothigh(high, pivotLookback, pivotLookback)
+pivotLow = ta.pivotlow(low, pivotLookback, pivotLookback)
+
+var float lastPivotHigh = na
+var float lastPivotLow = na
+
+if not na(pivotHigh)
+    lastPivotHigh := pivotHigh
+if not na(pivotLow)
+    lastPivotLow := pivotLow
+
+nearResistance = not na(lastPivotHigh) and math.abs(close - lastPivotHigh) / close < 0.02
+nearSupport = not na(lastPivotLow) and math.abs(close - lastPivotLow) / close < 0.02
+
+atKeyLevel = nearSupport or nearResistance
+
+// ============================================================================
+// TIME OF DAY FILTER
+// ============================================================================
+currentHour = hour(time, syminfo.timezone)
+currentMinute = minute(time, syminfo.timezone)
+currentTime = currentHour * 60 + currentMinute
+
+openTime = 9 * 60 + 30
+firstRiskEnd = 10 * 60
+lunchStart = 11 * 60 + 30
+lunchEnd = 13 * 60 + 30
+closeStart = 15 * 60 + 30
+
+isFirstRisk = currentTime >= openTime and currentTime < firstRiskEnd
+isLunch = currentTime >= lunchStart and currentTime < lunchEnd
+isCloseRisk = currentTime >= closeStart
+isBestHours = not isFirstRisk and not isLunch and not isCloseRisk
+
+// ============================================================================
+// QUALITY SCORE CALCULATION (0-100)
+// ============================================================================
+
+// Component 1: Base Signal (40 points)
+baseScore = 40
+
+// Component 2: Regime (20 points)
+regimeScore = ranging ? 20 : weakTrend ? 10 : 0
+
+// Component 3: Volume (15 points)
+volScore = volRatio >= 2.0 ? 15 : volRatio >= 1.5 ? 12 : volRatio >= 1.2 ? 8 : 0
+
+// Component 4: Divergence (15 points)
+divScore = 0
+if bullBase and bullDiv
+    divScore := 15
+if bearBase and bearDiv
+    divScore := 15
+
+// Component 5: Context - S/R (10 points)
+contextScore = atKeyLevel ? 10 : 0
+
+// Adjustments
+htfBonus = (bullBase and htfBullish) or (bearBase and htfBearish) ? 10 : 0
+htfPenalty = (bullBase and htfBearish) or (bearBase and htfBullish) ? -20 : 0
+todPenalty = isFirstRisk or isLunch ? -10 : isCloseRisk ? -5 : 0
+squeezeBonus = bbSqueezed ? -15 : 0
+
+// Total Quality
+totalQuality = math.round(math.max(math.min(baseScore + regimeScore + volScore + divScore + contextScore + htfBonus + htfPenalty + todPenalty + squeezeBonus, 100), 0))
+
+// ============================================================================
+// QUALIFIED SIGNALS
+// ============================================================================
+bullQuality = bullBase ? totalQuality : 0
+bearQuality = bearBase ? totalQuality : 0
+
+bullQualified = bullBase and bullQuality >= marginalThreshold and regimeOK and barstate.isconfirmed
+bearQualified = bearBase and bearQuality >= marginalThreshold and regimeOK and barstate.isconfirmed
+
+qualityTier = totalQuality >= excellentThreshold ? 'EXCELLENT' : totalQuality >= goodThreshold ? 'GOOD' : totalQuality >= marginalThreshold ? 'MARGINAL' : 'SKIP'
+
+// ============================================================================
+// PLOTTING - BOLLINGER BANDS
+// ============================================================================
+basisPlot = plot(showBB ? bbBasis : na, 'BB Basis', color.new(color.gray, 0), linewidth = 1)
+upperPlot = plot(showBB ? bbUpper : na, 'BB Upper', color.new(color.blue, 0), linewidth = 2)
+lowerPlot = plot(showBB ? bbLower : na, 'BB Lower', color.new(color.blue, 0), linewidth = 2)
+fill(upperPlot, lowerPlot, color.new(color.blue, 95), title = 'BB Fill')
+
+// ============================================================================
+// PLOTTING - FIBONACCI LEVELS
+// ============================================================================
+plot(showFibLevels ? upperFib1 : na, 'Upper Fib 1', color.new(color.teal, 60), linewidth = 1, style = plot.style_circles)
+plot(showFibLevels ? upperFib2 : na, 'Upper Fib 2', color.new(color.teal, 40), linewidth = 1, style = plot.style_circles)
+plot(showFibLevels ? lowerFib1 : na, 'Lower Fib 1', color.new(color.teal, 60), linewidth = 1, style = plot.style_circles)
+plot(showFibLevels ? lowerFib2 : na, 'Lower Fib 2', color.new(color.teal, 40), linewidth = 1, style = plot.style_circles)
+
+// ============================================================================
+// SIGNAL LABELS
+// ============================================================================
+if showSignals and bullQualified
+    qColor = bullQuality >= excellentThreshold ? color.new(color.lime, 0) : bullQuality >= goodThreshold ? color.new(color.lime, 20) : color.new(color.orange, 10)
+    
+    labelText = '🚀 BUY\n' + str.tostring(bullQuality) + '%\n' + qualityTier
+    if bullDiv
+        labelText := labelText + '\nDIV!'
+    
+    label.new(bar_index, low - atr, labelText, color = qColor, style = label.style_label_up, textcolor = color.white, size = size.large)
+
+if showSignals and bearQualified
+    qColor = bearQuality >= excellentThreshold ? color.new(color.red, 0) : bearQuality >= goodThreshold ? color.new(color.red, 20) : color.new(color.orange, 10)
+    
+    labelText = '🔻 SELL\n' + str.tostring(bearQuality) + '%\n' + qualityTier
+    if bearDiv
+        labelText := labelText + '\nDIV!'
+    
+    label.new(bar_index, high + atr, labelText, color = qColor, style = label.style_label_down, textcolor = color.white, size = size.large)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 14, bgcolor = color.new(#0a0e27, 5), border_color = color.new(color.gray, 30), border_width = 2)
+
+if showDashboard and barstate.islast
+    // Header
+    table.cell(dash, 0, 0, 'BBSR PRO', text_color = color.white, bgcolor = color.new(color.purple, 60), text_size = size.normal)
+    table.cell(dash, 1, 0, syminfo.ticker, text_color = color.yellow, bgcolor = color.new(color.purple, 60), text_size = size.normal)
+    
+    // Position in BB
+    bbPosition = math.round((close - bbLower) / (bbUpper - bbLower) * 100)
+    posText = str.tostring(bbPosition) + '%'
+    posColor = bbPosition <= 10 ? color.lime : bbPosition >= 90 ? color.red : color.gray
+    table.cell(dash, 0, 1, 'BB Position', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 1, posText, text_color = posColor, text_size = size.small)
+    
+    // Stoch RSI
+    table.cell(dash, 0, 2, 'StochRSI', text_color = color.white, text_size = size.small)
+    stochText = str.tostring(math.round(k))
+    stochColor = k < 20 ? color.lime : k > 80 ? color.red : color.gray
+    table.cell(dash, 1, 2, stochText, text_color = stochColor, text_size = size.small)
+    
+    // Regime
+    table.cell(dash, 0, 3, 'Regime', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 3, regimeText, text_color = regimeColor, text_size = size.small)
+    
+    // Quality Score
+    qColor2 = totalQuality >= excellentThreshold ? color.new(color.lime, 40) : totalQuality >= goodThreshold ? color.new(color.yellow, 40) : totalQuality >= marginalThreshold ? color.new(color.orange, 40) : color.new(color.red, 40)
+    table.cell(dash, 0, 4, 'QUALITY', text_color = color.white, bgcolor = qColor2, text_size = size.normal)
+    table.cell(dash, 1, 4, str.tostring(totalQuality) + '%', text_color = color.white, bgcolor = qColor2, text_size = size.large)
+    
+    // Divider
+    table.cell(dash, 0, 5, '━━━━━━━━', text_color = color.gray, text_size = size.tiny)
+    table.cell(dash, 1, 5, 'COMPONENTS', text_color = color.gray, text_size = size.tiny)
+    
+    // Base Signal
+    table.cell(dash, 0, 6, 'Base Signal', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 6, '40/40', text_color = color.lime, text_size = size.small)
+    
+    // Regime Score
+    table.cell(dash, 0, 7, 'Regime', text_color = color.white, text_size = size.small)
+    regScoreColor = regimeScore >= 15 ? color.lime : regimeScore >= 10 ? color.yellow : color.red
+    table.cell(dash, 1, 7, str.tostring(math.round(regimeScore)) + '/20', text_color = regScoreColor, text_size = size.small)
+    
+    // Volume
+    table.cell(dash, 0, 8, 'Volume', text_color = color.white, text_size = size.small)
+    volColor = volScore >= 12 ? color.lime : volScore >= 8 ? color.yellow : color.red
+    table.cell(dash, 1, 8, str.tostring(math.round(volScore)) + '/15', text_color = volColor, text_size = size.small)
+    
+    // Divergence
+    table.cell(dash, 0, 9, 'Divergence', text_color = color.white, text_size = size.small)
+    divColor = divScore > 0 ? color.lime : color.red
+    divText = divScore > 0 ? '15/15' : '0/15'
+    table.cell(dash, 1, 9, divText, text_color = divColor, text_size = size.small)
+    
+    // Context
+    table.cell(dash, 0, 10, 'S/R Context', text_color = color.white, text_size = size.small)
+    ctxColor = contextScore > 0 ? color.lime : color.gray
+    table.cell(dash, 1, 10, str.tostring(math.round(contextScore)) + '/10', text_color = ctxColor, text_size = size.small)
+    
+    // HTF
+    table.cell(dash, 0, 11, 'HTF Align', text_color = color.white, text_size = size.small)
+    htfText = htfBullish ? 'BULL' : 'BEAR'
+    htfColor2 = htfBullish ? color.lime : color.red
+    table.cell(dash, 1, 11, htfText, text_color = htfColor2, text_size = size.small)
+    
+    // BB State
+    table.cell(dash, 0, 12, 'BB State', text_color = color.white, text_size = size.small)
+    bbStateText = bbSqueezed ? 'SQUEEZED' : bbExpanded ? 'EXPANDED' : 'NORMAL'
+    bbStateColor = bbSqueezed ? color.yellow : bbExpanded ? color.orange : color.lime
+    table.cell(dash, 1, 12, bbStateText, text_color = bbStateColor, text_size = size.tiny)
+    
+    // Time Risk
+    table.cell(dash, 0, 13, 'Time Risk', text_color = color.white, text_size = size.small)
+    todText = isBestHours ? 'OPTIMAL' : isFirstRisk ? 'HIGH' : isLunch ? 'CHOP' : 'CLOSE'
+    todColor = isBestHours ? color.lime : color.orange
+    table.cell(dash, 1, 13, todText, text_color = todColor, text_size = size.tiny)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+excellentBull = bullQualified and bullQuality >= excellentThreshold
+excellentBear = bearQualified and bearQuality >= excellentThreshold
+goodBull = bullQualified and bullQuality >= goodThreshold and bullQuality < excellentThreshold
+goodBear = bearQualified and bearQuality >= goodThreshold and bearQuality < excellentThreshold
+
+alertcondition(excellentBull, 'EXCELLENT BUY', 'BBSR EXCELLENT BUY Signal')
+alertcondition(excellentBear, 'EXCELLENT SELL', 'BBSR EXCELLENT SELL Signal')
+alertcondition(goodBull, 'GOOD BUY', 'BBSR GOOD BUY Signal')
+alertcondition(goodBear, 'GOOD SELL', 'BBSR GOOD SELL Signal')
+
+// ============================================================================
+// MCP DATA OUTPUT
+// ============================================================================
+plot(bbUpper, 'BB Upper Value', display = display.data_window)
+plot(bbLower, 'BB Lower Value', display = display.data_window)
+plot(bbBasis, 'BB Basis Value', display = display.data_window)
+plot(k, 'StochRSI K', display = display.data_window)
+plot(d, 'StochRSI D', display = display.data_window)
+plot(bullQuality, 'Bull Quality', color.new(color.lime, 100), display = display.data_window)
+plot(bearQuality, 'Bear Quality', color.new(color.red, 100), display = display.data_window)
+plot(totalQuality, 'Current Quality', color.new(color.white, 100), display = display.data_window)
+plot(adx, 'ADX', display = display.data_window)
+plot(volRatio, 'Volume Ratio', display = display.data_window)
+plot(bullDiv ? 1 : 0, 'Bull Divergence', display = display.data_window)
+plot(bearDiv ? 1 : 0, 'Bear Divergence', display = display.data_window)
+plot(upperFib1, 'TP1 Upper', display = display.data_window)
+plot(lowerFib1, 'TP1 Lower', display = display.data_window)

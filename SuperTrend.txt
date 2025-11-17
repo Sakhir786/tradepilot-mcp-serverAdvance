@@ -1,0 +1,262 @@
+//@version=6
+indicator("TradePilot SuperTrend Pro", "TP-ST Pro", overlay = true, max_labels_count = 500)
+
+// ============================================================================
+// CORE SETTINGS
+// ============================================================================
+atrLength = input.int(10, 'ATR Length', minval = 1)
+baseMultiplier = input.float(2.5, 'Base ATR Multiplier', minval = 0.1, step = 0.1)
+useAdaptive = input.bool(true, 'Use Adaptive Multiplier')
+
+// ============================================================================
+// CONFIRMATION SETTINGS
+// ============================================================================
+minADX = input.int(20, 'Minimum ADX', minval = 10, maxval = 50)
+minVolRatio = input.float(1.2, 'Min Volume Ratio', minval = 1.0, step = 0.1)
+requireClose = input.bool(true, 'Require Bar Close Confirmation')
+
+// ============================================================================
+// QUALITY THRESHOLDS
+// ============================================================================
+excellentThreshold = input.int(85, 'Excellent Quality', minval = 70, maxval = 100)
+goodThreshold = input.int(70, 'Good Quality', minval = 50, maxval = 85)
+marginalThreshold = input.int(60, 'Marginal Quality', minval = 40, maxval = 70)
+
+// ============================================================================
+// VISUAL SETTINGS
+// ============================================================================
+showSignals = input.bool(true, 'Show Entry Signals', group = 'Visual')
+showDashboard = input.bool(true, 'Show Dashboard', group = 'Visual')
+
+// ============================================================================
+// VOLATILITY ANALYSIS
+// ============================================================================
+atrPercent = ta.atr(atrLength) / close * 100
+volatilityHigh = atrPercent > 2.0
+volatilityLow = atrPercent < 0.8
+volatilityNormal = not volatilityHigh and not volatilityLow
+
+adaptiveMultiplier = useAdaptive ? (volatilityLow ? baseMultiplier * 0.8 : volatilityHigh ? baseMultiplier * 1.4 : baseMultiplier) : baseMultiplier
+
+// ============================================================================
+// SUPERTREND CALCULATION
+// ============================================================================
+[supertrend, direction] = ta.supertrend(adaptiveMultiplier, atrLength)
+
+bullish = direction < 0
+bearish = direction > 0
+trendChanged = direction != direction[1]
+
+rawBuySignal = trendChanged and bullish
+rawSellSignal = trendChanged and bearish
+
+// ============================================================================
+// MARKET REGIME DETECTION
+// ============================================================================
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+
+trending = adx > 25
+weakTrend = adx >= 20 and adx <= 25
+choppy = adx < 20
+
+regimeText = trending ? 'TRENDING' : weakTrend ? 'WEAK TREND' : 'CHOPPY'
+regimeColor = trending ? color.lime : weakTrend ? color.yellow : color.red
+
+// ============================================================================
+// WHIPSAW DETECTION
+// ============================================================================
+var int flipCount = 0
+var int lastFlipBar = 0
+
+if trendChanged
+    if bar_index - lastFlipBar < 10
+        flipCount += 1
+    else
+        flipCount := 1
+    lastFlipBar := bar_index
+
+whipsawMode = flipCount >= 3
+if bar_index - lastFlipBar > 20
+    flipCount := 0
+
+// ============================================================================
+// VOLUME ANALYSIS
+// ============================================================================
+avgVolume = ta.sma(volume, 20)
+volRatio = volume / avgVolume
+volumeConfirmed = volRatio >= minVolRatio
+
+// ============================================================================
+// HIGHER TIMEFRAME ALIGNMENT
+// ============================================================================
+htfTF = timeframe.period == '1' ? '5' : timeframe.period == '5' ? '15' : timeframe.period == '15' ? '60' : timeframe.period == '60' ? '240' : 'D'
+
+htfDir = request.security(syminfo.tickerid, htfTF, direction, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+htfBullish = htfDir < 0
+htfBearish = htfDir > 0
+htfAligned = (bullish and htfBullish) or (bearish and htfBearish)
+
+// ============================================================================
+// RSI MOMENTUM
+// ============================================================================
+rsi = ta.rsi(close, 14)
+rsiAligned = (bullish and rsi > 50) or (bearish and rsi < 50)
+
+// ============================================================================
+// TIME OF DAY FILTER
+// ============================================================================
+currentHour = hour(time, syminfo.timezone)
+currentMinute = minute(time, syminfo.timezone)
+currentTime = currentHour * 60 + currentMinute
+
+openTime = 9 * 60 + 30
+firstRiskEnd = 10 * 60
+lunchStart = 11 * 60 + 30
+lunchEnd = 13 * 60 + 30
+closeStart = 15 * 60 + 30
+
+isFirstRisk = currentTime >= openTime and currentTime < firstRiskEnd
+isLunch = currentTime >= lunchStart and currentTime < lunchEnd
+isCloseRisk = currentTime >= closeStart
+isBestHours = not isFirstRisk and not isLunch and not isCloseRisk
+
+todText = isFirstRisk ? 'HIGH RISK' : isLunch ? 'CHOP RISK' : isCloseRisk ? 'REV RISK' : 'OPTIMAL'
+
+// ============================================================================
+// SIGNAL PERSISTENCE TRACKING
+// ============================================================================
+var int barsInTrend = 0
+
+if direction == direction[1]
+    barsInTrend += 1
+else
+    barsInTrend := 0
+
+persistence = barsInTrend > 15 ? 'EXCELLENT' : barsInTrend > 6 ? 'GOOD' : barsInTrend > 3 ? 'MODERATE' : 'SHORT'
+
+// ============================================================================
+// QUALITY SCORE CALCULATION
+// ============================================================================
+trendScore = math.min(adx / 50 * 35, 35)
+volScore = math.min((volRatio - 1) / 2 * 20, 20)
+htfScore = htfAligned ? 25 : 0
+momentumScore = rsiAligned ? 10 : 0
+todScore = isBestHours ? 10 : isFirstRisk or isCloseRisk ? 5 : 0
+
+baseQuality = trendScore + volScore + htfScore + momentumScore + todScore
+
+regimeAdjustment = choppy ? -20 : trending ? 10 : 0
+whipsawPenalty = whipsawMode ? -15 : 0
+volatilityAdjustment = volatilityHigh ? -5 : 0
+
+totalQuality = math.round(math.max(math.min(baseQuality + regimeAdjustment + whipsawPenalty + volatilityAdjustment, 100), 0))
+
+// ============================================================================
+// QUALIFIED SIGNALS
+// ============================================================================
+buyQuality = rawBuySignal ? totalQuality : 0
+sellQuality = rawSellSignal ? totalQuality : 0
+
+confirmationReq = requireClose ? barstate.isconfirmed : true
+
+buyQualified = rawBuySignal and buyQuality >= marginalThreshold and confirmationReq
+sellQualified = rawSellSignal and sellQuality >= marginalThreshold and confirmationReq
+
+qualityTier = totalQuality >= excellentThreshold ? 'EXCELLENT' : totalQuality >= goodThreshold ? 'GOOD' : totalQuality >= marginalThreshold ? 'MARGINAL' : 'SKIP'
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+stColor = bullish ? color.new(color.lime, 0) : color.new(color.red, 0)
+plot(supertrend, 'SuperTrend', stColor, linewidth = 3)
+
+bgColor = bullish ? color.new(color.lime, 97) : color.new(color.red, 97)
+bgcolor(bgColor, title = 'Trend Zone')
+
+// ============================================================================
+// SIGNAL LABELS
+// ============================================================================
+if showSignals and buyQualified
+    qColor = buyQuality >= excellentThreshold ? color.new(color.lime, 0) : buyQuality >= goodThreshold ? color.new(color.lime, 30) : color.new(color.orange, 20)
+    labelText = '🚀 BUY\n' + str.tostring(buyQuality) + '%\n' + qualityTier
+    label.new(bar_index, low - ta.atr(10), labelText, color = qColor, style = label.style_label_up, textcolor = color.white, size = size.large)
+
+if showSignals and sellQualified
+    qColor = sellQuality >= excellentThreshold ? color.new(color.red, 0) : sellQuality >= goodThreshold ? color.new(color.red, 30) : color.new(color.orange, 20)
+    labelText = '🔻 SELL\n' + str.tostring(sellQuality) + '%\n' + qualityTier
+    label.new(bar_index, high + ta.atr(10), labelText, color = qColor, style = label.style_label_down, textcolor = color.white, size = size.large)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 12, bgcolor = color.new(#0a0e27, 5), border_color = color.new(color.gray, 30), border_width = 2)
+
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, 'SUPERTREND PRO', text_color = color.white, bgcolor = color.new(color.blue, 60), text_size = size.normal)
+    table.cell(dash, 1, 0, syminfo.ticker, text_color = color.yellow, bgcolor = color.new(color.blue, 60), text_size = size.normal)
+    
+    table.cell(dash, 0, 1, 'Trend', text_color = color.white, text_size = size.normal)
+    trendText = bullish ? 'BULL' : 'BEAR'
+    table.cell(dash, 1, 1, trendText, text_color = bullish ? color.lime : color.red, text_size = size.normal)
+    
+    table.cell(dash, 0, 2, 'Regime', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 2, regimeText, text_color = regimeColor, text_size = size.small)
+    
+    qColor2 = totalQuality >= excellentThreshold ? color.new(color.lime, 40) : totalQuality >= goodThreshold ? color.new(color.yellow, 40) : totalQuality >= marginalThreshold ? color.new(color.orange, 40) : color.new(color.red, 40)
+    table.cell(dash, 0, 3, 'QUALITY', text_color = color.white, bgcolor = qColor2, text_size = size.normal)
+    table.cell(dash, 1, 3, str.tostring(totalQuality) + '%', text_color = color.white, bgcolor = qColor2, text_size = size.large)
+    
+    table.cell(dash, 0, 4, '━━━━━━━━', text_color = color.gray, text_size = size.tiny)
+    table.cell(dash, 1, 4, 'COMPONENTS', text_color = color.gray, text_size = size.tiny)
+    
+    table.cell(dash, 0, 5, 'Trend Strength', text_color = color.white, text_size = size.small)
+    adxColor = trendScore >= 25 ? color.lime : trendScore >= 15 ? color.yellow : color.red
+    table.cell(dash, 1, 5, str.tostring(math.round(trendScore)) + '/35', text_color = adxColor, text_size = size.small)
+    
+    table.cell(dash, 0, 6, 'Volume', text_color = color.white, text_size = size.small)
+    volColor = volScore >= 15 ? color.lime : volScore >= 10 ? color.yellow : color.red
+    table.cell(dash, 1, 6, str.tostring(math.round(volScore)) + '/20', text_color = volColor, text_size = size.small)
+    
+    table.cell(dash, 0, 7, 'HTF Align', text_color = color.white, text_size = size.small)
+    htfColor = htfAligned ? color.lime : color.red
+    table.cell(dash, 1, 7, htfAligned ? '25/25' : '0/25', text_color = htfColor, text_size = size.small)
+    
+    table.cell(dash, 0, 8, 'Momentum', text_color = color.white, text_size = size.small)
+    momColor = rsiAligned ? color.lime : color.red
+    table.cell(dash, 1, 8, rsiAligned ? '10/10' : '0/10', text_color = momColor, text_size = size.small)
+    
+    table.cell(dash, 0, 9, 'Time Risk', text_color = color.white, text_size = size.small)
+    todColor = isBestHours ? color.lime : color.orange
+    table.cell(dash, 1, 9, todText, text_color = todColor, text_size = size.tiny)
+    
+    table.cell(dash, 0, 10, 'Persistence', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 10, persistence, text_color = color.aqua, text_size = size.tiny)
+    
+    table.cell(dash, 0, 11, 'ATR Mult', text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 11, str.tostring(adaptiveMultiplier, '#.##'), text_color = color.aqua, text_size = size.small)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+excellentBuy = buyQualified and buyQuality >= excellentThreshold
+excellentSell = sellQualified and sellQuality >= excellentThreshold
+goodBuy = buyQualified and buyQuality >= goodThreshold and buyQuality < excellentThreshold
+goodSell = sellQualified and sellQuality >= goodThreshold and sellQuality < excellentThreshold
+
+alertcondition(excellentBuy, 'EXCELLENT BUY', 'SuperTrend EXCELLENT BUY Signal')
+alertcondition(excellentSell, 'EXCELLENT SELL', 'SuperTrend EXCELLENT SELL Signal')
+alertcondition(goodBuy, 'GOOD BUY', 'SuperTrend GOOD BUY Signal')
+alertcondition(goodSell, 'GOOD SELL', 'SuperTrend GOOD SELL Signal')
+
+// ============================================================================
+// MCP DATA OUTPUT - Core metrics only
+// ============================================================================
+plot(supertrend, 'SuperTrend Value', display = display.data_window)
+plot(buyQuality, 'Buy Quality', color.new(color.lime, 100), display = display.data_window)
+plot(sellQuality, 'Sell Quality', color.new(color.red, 100), display = display.data_window)
+plot(totalQuality, 'Current Quality', color.new(color.white, 100), display = display.data_window)
+plot(direction, 'Direction', color.new(color.gray, 100), display = display.data_window)
+plot(adx, 'ADX', color.new(color.blue, 100), display = display.data_window)
+plot(volRatio, 'Volume Ratio', color.new(color.orange, 100), display = display.data_window)
+plot(htfAligned ? 1 : 0, 'HTF Aligned', color.new(color.purple, 100), display = display.data_window)
+plot(barsInTrend, 'Bars In Trend', color.new(color.aqua, 100), display = display.data_window)

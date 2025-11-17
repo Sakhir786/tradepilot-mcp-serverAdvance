@@ -1,0 +1,400 @@
+//@version=6
+indicator("Market Structure Complete", overlay = true, max_lines_count = 500, max_boxes_count = 500)
+
+len = input.int(10, "Pivot Length")
+amount_ms = input.int(10, "Max CHoCH/BOS")
+amount_ob = input.int(5, "Max Order Blocks")
+min_quality = input.int(60, "Min Quality")
+volume_mult = input.float(1.5, "Volume Mult")
+trend_length = input.int(50, "Trend EMA")
+
+show_choch = input.bool(true, "Show CHoCH", group = "Display")
+show_bos = input.bool(true, "Show BOS", group = "Display")
+show_ob = input.bool(true, "Show Order Blocks", group = "Display")
+show_delta = input.bool(true, "Show Delta", group = "Display")
+show_quality = input.bool(true, "Show Quality", group = "Display")
+show_dashboard = input.bool(true, "Dashboard", group = "Display")
+
+col_choch_bull = input.color(color.lime, "CHoCH Bull", group = "Colors")
+col_choch_bear = input.color(color.red, "CHoCH Bear", group = "Colors")
+col_bos_bull = input.color(color.blue, "BOS Bull", group = "Colors")
+col_bos_bear = input.color(color.orange, "BOS Bear", group = "Colors")
+col_ob_bull = input.color(color.aqua, "OB Bull", group = "Colors")
+col_ob_bear = input.color(color.fuchsia, "OB Bear", group = "Colors")
+
+var ph = float(na)
+var pl = float(na)
+var ph_index = int(na)
+var pl_index = int(na)
+var trend = 0
+var int total_choch_bull = 0
+var int total_choch_bear = 0
+var int total_bos_bull = 0
+var int total_bos_bear = 0
+var int total_ob_bull = 0
+var int total_ob_bear = 0
+
+type zone 
+    line level 
+    label label1
+    label label2
+    label label3
+    label label4
+    polyline poly
+    label label5
+    label quality_label
+    float quality_score
+    string structure_type
+    string direction
+
+type ob_zone
+    box ob_box
+    float top
+    float btm
+    int loc
+    bool breaker
+    int break_loc
+    bool is_bullish
+
+var structure_levels = array.new<zone>()
+var bullish_ob = array.new<ob_zone>()
+var bearish_ob = array.new<ob_zone>()
+
+trend_ema = ta.ema(close, trend_length)
+is_uptrend = close > trend_ema
+avg_volume = ta.sma(volume, 20)
+atr_val = ta.atr(14)
+
+get_quality_color(q) =>
+    q >= 80 ? color.green : q >= 70 ? color.lime : q >= 60 ? color.yellow : color.orange
+
+pivotH = ta.pivothigh(len, len)
+pivotL = ta.pivotlow(len, len)
+
+var last_ph = float(na)
+var last_pl = float(na)
+
+if not na(pivotH)
+    ph_index := bar_index[len]
+    ph := pivotH
+    if not na(last_ph)
+        if pivotH > last_ph
+            trend := 1
+    last_ph := pivotH
+
+if not na(pivotL)
+    pl_index := bar_index[len]
+    pl := pivotL
+    if not na(last_pl)
+        if pivotL < last_pl
+            trend := -1
+    last_pl := pivotL
+
+if ta.crossover(high, ph) and not na(ph)
+    check = false
+    l = low
+    delta = 0.
+    max_vol = 0.
+
+    for i = 0 to bar_index-ph_index
+        l := math.min(l, low[i])
+        delta += close[i] > open[i] ? volume[i] : -volume[i]
+        max_vol := math.max(max_vol, volume[i])
+
+    quality = 50.0
+    abs_delta = math.abs(delta)
+    
+    if abs_delta > 1000000
+        quality += 15
+    else if abs_delta > 500000
+        quality += 10
+    
+    if max_vol > avg_volume * 2.0
+        quality += 15
+    else if max_vol > avg_volume * volume_mult
+        quality += 10
+    
+    if delta > 0
+        quality += 10
+    
+    if is_uptrend
+        quality += 10
+    
+    if (high - ph) > atr_val * 0.5
+        quality += 5
+    
+    quality_score = math.min(quality, 100)
+    
+    is_choch = trend <= 0
+    is_bos = trend > 0
+    structure_type = is_choch ? "CHoCH" : "BOS"
+    show_this = (is_choch and show_choch) or (is_bos and show_bos)
+    
+    if quality_score >= min_quality and show_this
+        color_to_use = is_choch ? col_choch_bull : col_bos_bull
+        
+        cp = array.new<chart.point>()
+        cp.push(chart.point.from_index(ph_index, ph))
+        cp.push(chart.point.from_index(bar_index, high))
+        
+        lbl1 = label.new(ph_index, ph, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+        lbl2 = label.new(bar_index, high, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+        lbl3 = label(na)
+        lbl4 = label(na)
+        lbl5 = label(na)
+        lbl_q = label(na)
+        lne = line(na)
+
+        for i = 0 to bar_index-ph_index 
+            lo = low[i]
+            if lo == l and not check
+                check := true
+                cp.push(chart.point.from_index(bar_index-i, l))
+                lbl3 := label.new(bar_index-i, l, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+                lne := line.new(bar_index-i, l, bar_index, l, color = color_to_use, width = 3)
+                lbl4 := label.new(bar_index, l, structure_type, style = label.style_label_center, color = color.new(color_to_use, 100), textcolor = color_to_use, size = size.large)
+                
+                if show_delta
+                    delta_str = str.tostring(delta, format.volume)
+                    lbl5 := label.new(int(math.avg(bar_index,ph_index)), math.avg(lo, high), delta_str, color = color.new(color_to_use, 100), textcolor = delta > 0 ? color_to_use : color.red, size = size.small)
+                
+                if show_quality
+                    q_str = str.tostring(quality_score, format.mintick)
+                    lbl_q := label.new(bar_index, l, q_str, style = label.style_label_up, color = get_quality_color(quality_score), textcolor = color.white, size = size.small)
+
+        poly = polyline.new(cp, closed = true, fill_color = color.new(color_to_use, 85), line_color = color_to_use, line_width = 2)
+        z = zone.new(lne, lbl1, lbl2, lbl3, lbl4, poly, lbl5, lbl_q, quality_score, structure_type, "BULL")
+        structure_levels.push(z)
+        
+        if is_choch
+            total_choch_bull += 1
+        else
+            total_bos_bull += 1
+    
+    trend := 1
+
+if ta.crossunder(low, pl) and not na(pl)
+    check = false
+    h = high
+    delta = 0.
+    max_vol = 0.
+
+    for i = 0 to bar_index-pl_index
+        h := math.max(h, high[i])
+        delta += close[i] > open[i] ? volume[i] : -volume[i]
+        max_vol := math.max(max_vol, volume[i])
+
+    quality = 50.0
+    abs_delta = math.abs(delta)
+    
+    if abs_delta > 1000000
+        quality += 15
+    else if abs_delta > 500000
+        quality += 10
+    
+    if max_vol > avg_volume * 2.0
+        quality += 15
+    else if max_vol > avg_volume * volume_mult
+        quality += 10
+    
+    if delta < 0
+        quality += 10
+    
+    if not is_uptrend
+        quality += 10
+    
+    if (pl - low) > atr_val * 0.5
+        quality += 5
+    
+    quality_score = math.min(quality, 100)
+    
+    is_choch = trend >= 0
+    is_bos = trend < 0
+    structure_type = is_choch ? "CHoCH" : "BOS"
+    show_this = (is_choch and show_choch) or (is_bos and show_bos)
+    
+    if quality_score >= min_quality and show_this
+        color_to_use = is_choch ? col_choch_bear : col_bos_bear
+        
+        cp = array.new<chart.point>()
+        cp.push(chart.point.from_index(pl_index, pl))
+        cp.push(chart.point.from_index(bar_index, low))
+        
+        lbl1 = label.new(pl_index, pl, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+        lbl2 = label.new(bar_index, low, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+        lbl3 = label(na)
+        lbl4 = label(na)
+        lbl5 = label(na)
+        lbl_q = label(na)
+        lne = line(na)
+
+        for i = 0 to bar_index-pl_index
+            hi = high[i]
+            if hi == h and not check
+                check := true
+                cp.push(chart.point.from_index(bar_index-i, h))
+                lbl3 := label.new(bar_index-i, h, structure_type, style = label.style_circle, color = color.new(color_to_use, 30), textcolor = color_to_use, size = size.tiny)
+                lne := line.new(bar_index-i, h, bar_index, h, color = color_to_use, width = 3)
+                lbl4 := label.new(bar_index, h, structure_type, style = label.style_label_center, color = color.new(color_to_use, 100), textcolor = color_to_use, size = size.large)
+
+                if show_delta
+                    delta_str = str.tostring(delta, format.volume)
+                    lbl5 := label.new(bar_index - i, math.avg(hi, low), delta_str, color = color.new(color_to_use, 100), textcolor = delta > 0 ? color.green : color_to_use, size = size.small)
+                
+                if show_quality
+                    q_str = str.tostring(quality_score, format.mintick)
+                    lbl_q := label.new(bar_index, h, q_str, style = label.style_label_down, color = get_quality_color(quality_score), textcolor = color.white, size = size.small)
+
+        poly = polyline.new(cp, closed = true, fill_color = color.new(color_to_use, 80), line_color = color_to_use, line_width = 2)
+        z = zone.new(lne, lbl1, lbl2, lbl3, lbl4, poly, lbl5, lbl_q, quality_score, structure_type, "BEAR")
+        structure_levels.push(z)
+        
+        if is_choch
+            total_choch_bear += 1
+        else
+            total_bos_bear += 1
+    
+    trend := -1
+
+if show_ob
+    n = bar_index
+    os = 0
+    
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+    
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os
+    
+    if os == 0 and os[1] != 0
+        maxima = low[1]
+        minima = high[1]
+        
+        for i = 1 to len
+            maxima := math.max(high[i], maxima)
+            minima := maxima == high[i] ? low[i] : minima
+        
+        if bullish_ob.size() < amount_ob
+            new_box = box.new(bar_index - len, maxima, bar_index + 50, minima, na, bgcolor = color.new(col_ob_bear, 80))
+            bullish_ob.unshift(ob_zone.new(new_box, maxima, minima, bar_index - len, false, na, false))
+            total_ob_bear += 1
+    
+    if os == 1 and os[1] != 1
+        minima = high[1]
+        maxima = low[1]
+        
+        for i = 1 to len
+            minima := math.min(low[i], minima)
+            maxima := minima == low[i] ? high[i] : maxima
+        
+        if bearish_ob.size() < amount_ob
+            new_box = box.new(bar_index - len, maxima, bar_index + 50, minima, na, bgcolor = color.new(col_ob_bull, 80))
+            bearish_ob.unshift(ob_zone.new(new_box, maxima, minima, bar_index - len, false, na, true))
+            total_ob_bull += 1
+
+body_h = close > open ? close : open
+body_l = close < open ? close : open
+active_zones = 0
+active_choch = 0
+active_bos = 0
+active_ob = 0
+
+for z in structure_levels
+    z.level.set_x2(bar_index+5)
+    z.label4.set_x(bar_index+5)
+
+    if body_h > z.level.get_y1() and body_l < z.level.get_y1()
+        z.level.delete()
+        z.label1.delete()
+        z.label2.delete()
+        z.label3.delete()
+        z.label4.delete()
+        z.label5.delete()
+        z.quality_label.delete()
+        z.poly.delete()
+        structure_levels.remove(structure_levels.indexof(z))
+    else
+        active_zones += 1
+        if z.structure_type == "CHoCH"
+            active_choch += 1
+        else
+            active_bos += 1
+
+if structure_levels.size() > amount_ms
+    z = structure_levels.shift()
+    z.level.delete()
+    z.label1.delete()
+    z.label2.delete()
+    z.label3.delete()
+    z.label4.delete()
+    z.label5.delete()
+    z.quality_label.delete()
+    z.poly.delete()
+
+if show_ob and bullish_ob.size() > 0
+    for i = bullish_ob.size()-1 to 0
+        element = bullish_ob.get(i)
+        element.ob_box.set_right(bar_index + 50)
+        
+        if not element.breaker
+            if math.max(close, open) > element.top
+                element.breaker := true
+                element.break_loc := bar_index
+                element.ob_box.set_right(bar_index)
+                element.ob_box.set_bgcolor(color.new(col_ob_bear, 90))
+        else
+            if close < element.btm
+                element.ob_box.delete()
+                bullish_ob.remove(i)
+        
+        if not element.breaker
+            active_ob += 1
+
+if show_ob and bearish_ob.size() > 0
+    for i = bearish_ob.size()-1 to 0
+        element = bearish_ob.get(i)
+        element.ob_box.set_right(bar_index + 50)
+        
+        if not element.breaker
+            if math.min(close, open) < element.btm
+                element.breaker := true
+                element.break_loc := bar_index
+                element.ob_box.set_right(bar_index)
+                element.ob_box.set_bgcolor(color.new(col_ob_bull, 90))
+        else
+            if close > element.top
+                element.ob_box.delete()
+                bearish_ob.remove(i)
+        
+        if not element.breaker
+            active_ob += 1
+
+if show_dashboard and barstate.islast
+    var latest_structure = "NONE"
+    var latest_direction = "NONE"
+    var latest_q = 0.0
+    
+    if structure_levels.size() > 0
+        last_element = structure_levels.last()
+        latest_structure := last_element.structure_type
+        latest_direction := last_element.direction
+        latest_q := last_element.quality_score
+    
+    var market_state = "RANGING"
+    if active_bos > active_choch * 2
+        market_state := "TRENDING"
+    else if active_choch > active_bos * 2
+        market_state := "REVERSING"
+    
+    var table dash = table.new(position.top_right, 1, 1)
+    
+    line1 = "MARKET STRUCTURE"
+    line2 = "State: " + market_state
+    line3 = "Active MS: " + str.tostring(active_zones)
+    line4 = "CHoCH: " + str.tostring(active_choch) + " BOS: " + str.tostring(active_bos)
+    line5 = "Order Blocks: " + str.tostring(active_ob)
+    line6 = "Latest: " + latest_structure + " " + latest_direction
+    line7 = "Quality: " + str.tostring(latest_q, format.mintick)
+    
+    txt = line1 + "\n" + line2 + "\n" + line3 + "\n" + line4 + "\n" + line5 + "\n" + line6 + "\n" + line7
+    
+    table.cell(dash, 0, 0, txt, text_color = color.white, text_size = size.small, bgcolor = color.new(color.black, 20))

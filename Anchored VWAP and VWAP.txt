@@ -1,0 +1,187 @@
+//@version=6
+indicator("VWAP Trading System", overlay=true)
+
+manual_year = input.int(2024, "Anchor Year", group="Anchor")
+manual_month = input.int(11, "Anchor Month", group="Anchor")
+manual_day = input.int(1, "Anchor Day", group="Anchor")
+
+min_volume_mult = input.float(1.5, "Min Volume Multiple", minval=1.0, step=0.1, group="Filters")
+min_rejections = input.int(3, "Min Rejections", minval=2, group="Filters")
+min_acceptance_bars = input.int(5, "Min Acceptance Bars", minval=3, group="Filters")
+vwap_touch_threshold = input.float(0.003, "VWAP Touch Threshold", step=0.001, group="Filters")
+
+show_signals = input.bool(true, "Show Trade Signals", group="Visual")
+
+manual_anchor_time = timestamp(manual_year, manual_month, manual_day, 0, 0)
+
+var float sum_pv = 0.0
+var float sum_v = 0.0
+var float sum_sq = 0.0
+var int bars = 0
+
+is_after = time >= manual_anchor_time
+is_reset = time >= manual_anchor_time and time[1] < manual_anchor_time
+
+if is_reset
+    sum_pv := hlc3 * volume
+    sum_v := volume
+    sum_sq := 0.0
+    bars := 1
+else if is_after
+    sum_pv := sum_pv[1] + (hlc3 * volume)
+    sum_v := sum_v[1] + volume
+    bars := bars[1] + 1
+
+vwap = sum_v > 0 ? sum_pv / sum_v : na
+diff = hlc3 - vwap
+
+if is_reset
+    sum_sq := diff * diff
+else if is_after
+    sum_sq := sum_sq[1] + (diff * diff)
+
+variance = bars > 1 ? sum_sq / bars : 0
+stdev = math.sqrt(variance)
+
+avg_volume = ta.sma(volume, 20)
+is_high_volume = volume > avg_volume * min_volume_mult
+
+var int rejection_count = 0
+var int last_rejection_bar = 0
+
+distance_to_vwap = math.abs(close - vwap) / vwap
+touching_vwap = distance_to_vwap < vwap_touch_threshold
+
+is_rejection = (high > vwap and close < vwap) or (low < vwap and close > vwap)
+
+if touching_vwap and is_rejection and (bar_index - last_rejection_bar) > 5
+    rejection_count := rejection_count + 1
+    last_rejection_bar := bar_index
+
+is_strong_level = rejection_count >= min_rejections
+
+stdev_distance = (close - vwap) / stdev
+
+at_upper_2sd = stdev_distance >= 2.0
+at_lower_2sd = stdev_distance <= -2.0
+
+var string zone = "NEUTRAL"
+var int bars_in_zone = 0
+
+if close > vwap + stdev
+    if zone == "UPPER"
+        bars_in_zone := bars_in_zone + 1
+    else
+        zone := "UPPER"
+        bars_in_zone := 1
+else if close < vwap - stdev
+    if zone == "LOWER"
+        bars_in_zone := bars_in_zone + 1
+    else
+        zone := "LOWER"
+        bars_in_zone := 1
+else
+    zone := "NEUTRAL"
+    bars_in_zone := 0
+
+accepted_above = zone == "UPPER" and bars_in_zone >= min_acceptance_bars
+accepted_below = zone == "LOWER" and bars_in_zone >= min_acceptance_bars
+
+vwap_slope = (vwap - vwap[10]) / vwap[10]
+vwap_bullish = vwap_slope > 0.002
+vwap_bearish = vwap_slope < -0.002
+
+cross_above_lower_band = ta.crossover(close, vwap - stdev)
+cross_below_upper_band = ta.crossunder(close, vwap + stdev)
+cross_above_upper_2sd = ta.crossover(close, vwap + 2*stdev)
+cross_below_lower_2sd = ta.crossunder(close, vwap - 2*stdev)
+
+long_setup = at_lower_2sd and is_high_volume and vwap_bullish and is_strong_level
+long_entry = long_setup and cross_above_lower_band
+
+short_setup = at_upper_2sd and is_high_volume and vwap_bearish and is_strong_level
+short_entry = short_setup and cross_below_upper_band
+
+breakout_long = accepted_above and cross_above_upper_2sd and is_high_volume
+breakout_short = accepted_below and cross_below_lower_2sd and is_high_volume
+
+plot(vwap, "VWAP", color=color.yellow, linewidth=3)
+plot(vwap + stdev, "+1SD", color=color.new(color.green, 50))
+plot(vwap - stdev, "-1SD", color=color.new(color.red, 50))
+plot(vwap + 2*stdev, "+2SD", color=color.new(color.green, 70))
+plot(vwap - 2*stdev, "-2SD", color=color.new(color.red, 70))
+
+bgcolor(is_high_volume ? color.new(color.green, 95) : na, title="High Volume")
+
+if show_signals and long_entry
+    label.new(bar_index, low, "LONG", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if show_signals and short_entry
+    label.new(bar_index, high, "SHORT", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+if show_signals and breakout_long
+    label.new(bar_index, low, "BO LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+
+if show_signals and breakout_short
+    label.new(bar_index, high, "BO SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+var table info = table.new(position.top_right, 2, 10, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "VWAP FILTERS", text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(info, 1, 0, "", bgcolor=color.new(color.black, 0))
+    
+    table.cell(info, 0, 1, "VWAP", text_color=color.white)
+    table.cell(info, 1, 1, str.tostring(vwap, "#.##"), text_color=color.yellow)
+    
+    table.cell(info, 0, 2, "Stdev Position", text_color=color.white)
+    stdev_text = str.tostring(math.abs(stdev_distance), "#.##") + " SD"
+    stdev_color = math.abs(stdev_distance) >= 2 ? color.red : math.abs(stdev_distance) >= 1 ? color.yellow : color.green
+    table.cell(info, 1, 2, stdev_text, text_color=stdev_color)
+    
+    table.cell(info, 0, 3, "Volume", text_color=color.white)
+    vol_status = is_high_volume ? "HIGH" : "LOW"
+    vol_color = is_high_volume ? color.green : color.gray
+    table.cell(info, 1, 3, vol_status, text_color=vol_color)
+    
+    table.cell(info, 0, 4, "Rejections", text_color=color.white)
+    rej_text = str.tostring(rejection_count)
+    rej_color = rejection_count >= min_rejections ? color.green : color.gray
+    table.cell(info, 1, 4, rej_text, text_color=rej_color)
+    
+    table.cell(info, 0, 5, "Zone", text_color=color.white)
+    zone_color = zone == "UPPER" ? color.green : zone == "LOWER" ? color.red : color.gray
+    zone_text = zone + " " + str.tostring(bars_in_zone)
+    table.cell(info, 1, 5, zone_text, text_color=zone_color)
+    
+    table.cell(info, 0, 6, "Acceptance", text_color=color.white)
+    accept_status = accepted_above ? "ABOVE" : accepted_below ? "BELOW" : "NONE"
+    accept_color = accepted_above or accepted_below ? color.green : color.gray
+    table.cell(info, 1, 6, accept_status, text_color=accept_color)
+    
+    table.cell(info, 0, 7, "VWAP Bias", text_color=color.white)
+    bias_text = vwap_bullish ? "BULL" : vwap_bearish ? "BEAR" : "NEUTRAL"
+    bias_color = vwap_bullish ? color.green : vwap_bearish ? color.red : color.gray
+    table.cell(info, 1, 7, bias_text, text_color=bias_color)
+    
+    table.cell(info, 0, 8, "Strong Level", text_color=color.white)
+    level_status = is_strong_level ? "YES" : "NO"
+    level_color = is_strong_level ? color.green : color.gray
+    table.cell(info, 1, 8, level_status, text_color=level_color)
+    
+    table.cell(info, 0, 9, "Trade Signal", text_color=color.white)
+    signal_text = long_setup or long_entry ? "LONG READY" : short_setup or short_entry ? "SHORT READY" : "NONE"
+    signal_color = long_setup or long_entry ? color.green : short_setup or short_entry ? color.red : color.gray
+    table.cell(info, 1, 9, signal_text, text_color=signal_color, bgcolor=color.new(signal_color, 90))
+
+if long_entry
+    alert("VWAP LONG ENTRY", alert.freq_once_per_bar)
+
+if short_entry
+    alert("VWAP SHORT ENTRY", alert.freq_once_per_bar)
+
+if breakout_long
+    alert("VWAP BREAKOUT LONG", alert.freq_once_per_bar)
+
+if breakout_short
+    alert("VWAP BREAKOUT SHORT", alert.freq_once_per_bar)

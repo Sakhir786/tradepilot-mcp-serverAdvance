@@ -1,0 +1,277 @@
+//@version=6
+indicator("Morning/Evening Star PRO - Enhanced", shorttitle="Star PRO", overlay=true)
+
+// ═════════════════ INPUTS ═════════════════
+show_bullish = input.bool(true, "Show Bullish Morning Star", group="Display")
+show_bearish = input.bool(true, "Show Bearish Evening Star", group="Display")
+body_ratio = input.float(0.333, "Middle Candle Body Ratio", minval=0.1, maxval=0.5, step=0.05, group="Pattern Settings")
+
+use_volume_filter = input.bool(true, "Require Volume Confirmation", group="Filters")
+volume_multiplier = input.float(1.2, "Volume Multiplier", minval=1.0, maxval=3.0, step=0.1, group="Filters")
+
+use_trend_filter = input.bool(true, "Check Trend Context", group="Filters")
+trend_ma_length = input.int(50, "Trend MA Length", minval=10, group="Filters")
+
+use_sr_filter = input.bool(true, "Check S/R Levels", group="Filters")
+lookback_bars = input.int(20, "S/R Lookback Period", minval=10, group="Filters")
+
+show_quality_score = input.bool(true, "Show Quality Score", group="Display")
+min_quality_score = input.int(60, "Minimum Quality Score", minval=0, maxval=100, group="Filters")
+
+show_targets = input.bool(true, "Show Entry/Stop/Target Levels", group="Display")
+risk_reward_ratio = input.float(2.0, "Risk/Reward Ratio", minval=1.0, maxval=5.0, step=0.5, group="Display")
+
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+alert_only_high_quality = input.bool(true, "Alert Only High Quality (≥80)", group="Alerts")
+
+// ═════════════════ CANDLE DATA ═════════════════
+candle1_open = open[2]
+candle1_close = close[2]
+candle1_high = high[2]
+candle1_low = low[2]
+
+candle2_open = open[1]
+candle2_close = close[1]
+candle2_high = high[1]
+candle2_low = low[1]
+
+candle3_open = open
+candle3_close = close
+candle3_high = high
+candle3_low = low
+
+// ═════════════════ HELPER FUNCTIONS ═════════════════
+check_volume() =>
+    avg_vol = ta.sma(volume, 20)
+    volume > (avg_vol * volume_multiplier)
+
+check_trend(is_bullish_pattern) =>
+    trend_ma = ta.sma(close, trend_ma_length)
+    if is_bullish_pattern
+        close < trend_ma
+    else
+        close > trend_ma
+
+check_near_sr(is_bullish_pattern) =>
+    highest_level = ta.highest(high, lookback_bars)
+    lowest_level = ta.lowest(low, lookback_bars)
+    
+    if is_bullish_pattern
+        distance_to_support = (close - lowest_level) / close
+        distance_to_support < 0.02
+    else
+        distance_to_resistance = (highest_level - close) / close
+        distance_to_resistance < 0.02
+
+calc_quality_score(is_bullish, has_volume, has_trend, has_sr, body_proportion) =>
+    float score = 0.0
+    score += 30.0
+    
+    if has_volume
+        score += 25.0
+    
+    if has_trend
+        score += 20.0
+    
+    if has_sr
+        score += 15.0
+    
+    if body_proportion < 0.2
+        score += 10.0
+    else if body_proportion < 0.3
+        score += 5.0
+    
+    score
+
+// ═════════════════ BULLISH MORNING STAR ═════════════════
+bullish_candle1_body = candle1_open - candle1_close
+bullish_candle2_body = math.abs(candle2_close - candle2_open)
+bullish_candle2_wick = candle2_high - math.max(candle2_open, candle2_close)
+bullish_candle3_body = candle3_close - candle3_open
+
+bullish_pattern_base = (candle1_close < candle1_open) and 
+     (bullish_candle2_body <= (body_ratio * bullish_candle1_body)) and
+     (bullish_candle2_wick > bullish_candle2_body) and
+     (candle3_close > candle3_open) and
+     (bullish_candle2_body <= (body_ratio * bullish_candle3_body)) and
+     (candle3_close > candle1_open)
+
+bullish_volume_ok = not use_volume_filter or check_volume()
+bullish_trend_ok = not use_trend_filter or check_trend(true)
+bullish_sr_ok = not use_sr_filter or check_near_sr(true)
+
+bullish_body_ratio = bullish_candle2_body / math.max(bullish_candle1_body, bullish_candle3_body)
+bullish_quality = calc_quality_score(true, bullish_volume_ok, bullish_trend_ok, bullish_sr_ok, bullish_body_ratio)
+
+bullish_star = show_bullish and bullish_pattern_base and bullish_volume_ok and bullish_trend_ok and bullish_sr_ok and bullish_quality >= min_quality_score
+
+// ═════════════════ BEARISH EVENING STAR ═════════════════
+bearish_candle1_body = candle1_close - candle1_open
+bearish_candle2_body = math.abs(candle2_open - candle2_close)
+bearish_candle2_wick = math.max(candle2_open, candle2_close) - candle2_low
+bearish_candle3_body = candle3_open - candle3_close
+
+bearish_pattern_base = (candle1_close > candle1_open) and
+     (bearish_candle2_body <= (body_ratio * bearish_candle1_body)) and
+     (bearish_candle2_wick > bearish_candle2_body) and
+     (candle3_close < candle3_open) and
+     (bearish_candle2_body <= (body_ratio * bearish_candle3_body)) and
+     (candle3_close < candle1_open)
+
+bearish_volume_ok = not use_volume_filter or check_volume()
+bearish_trend_ok = not use_trend_filter or check_trend(false)
+bearish_sr_ok = not use_sr_filter or check_near_sr(false)
+
+bearish_body_ratio = bearish_candle2_body / math.max(bearish_candle1_body, bearish_candle3_body)
+bearish_quality = calc_quality_score(false, bearish_volume_ok, bearish_trend_ok, bearish_sr_ok, bearish_body_ratio)
+
+bearish_star = show_bearish and bearish_pattern_base and bearish_volume_ok and bearish_trend_ok and bearish_sr_ok and bearish_quality >= min_quality_score
+
+// ═════════════════ RISK/REWARD CALCULATIONS ═════════════════
+bullish_entry = candle3_close
+bullish_stop = math.min(candle1_low, candle2_low, candle3_low)
+bullish_risk = bullish_entry - bullish_stop
+bullish_target1 = bullish_entry + (bullish_risk * risk_reward_ratio)
+bullish_target2 = bullish_entry + (bullish_risk * risk_reward_ratio * 1.5)
+
+bearish_entry = candle3_close
+bearish_stop = math.max(candle1_high, candle2_high, candle3_high)
+bearish_risk = bearish_stop - bearish_entry
+bearish_target1 = bearish_entry - (bearish_risk * risk_reward_ratio)
+bearish_target2 = bearish_entry - (bearish_risk * risk_reward_ratio * 1.5)
+
+// ═════════════════ PLOT PATTERNS - FIXED ═════════════════
+// Separate plots for high quality vs medium quality
+bullish_high_quality = bullish_star and bullish_quality >= 80
+bullish_med_quality = bullish_star and bullish_quality < 80
+
+bearish_high_quality = bearish_star and bearish_quality >= 80
+bearish_med_quality = bearish_star and bearish_quality < 80
+
+// Bullish High Quality
+plotshape(bullish_high_quality, 
+     title="Bullish MS - High Quality", 
+     style=shape.triangleup, 
+     location=location.belowbar, 
+     color=color.new(color.lime, 0), 
+     size=size.normal,
+     text="MS★")
+
+// Bullish Medium Quality
+plotshape(bullish_med_quality, 
+     title="Bullish MS - Medium Quality", 
+     style=shape.triangleup, 
+     location=location.belowbar, 
+     color=color.new(color.green, 20), 
+     size=size.small,
+     text="MS")
+
+// Bearish High Quality
+plotshape(bearish_high_quality, 
+     title="Bearish ES - High Quality", 
+     style=shape.triangledown, 
+     location=location.abovebar, 
+     color=color.new(color.red, 0), 
+     size=size.normal,
+     text="ES★")
+
+// Bearish Medium Quality
+plotshape(bearish_med_quality, 
+     title="Bearish ES - Medium Quality", 
+     style=shape.triangledown, 
+     location=location.abovebar, 
+     color=color.new(color.maroon, 20), 
+     size=size.small,
+     text="ES")
+
+// ═════════════════ BACKGROUND HIGHLIGHT ═════════════════
+bgcolor(bullish_star ? color.new(color.green, 90) : na, title="Bullish Background")
+bgcolor(bearish_star ? color.new(color.red, 90) : na, title="Bearish Background")
+
+// ═════════════════ PLOT ENTRY/STOP/TARGETS ═════════════════
+var line bullish_entry_line = na
+var line bullish_stop_line = na
+var line bullish_target1_line = na
+var line bullish_target2_line = na
+
+var line bearish_entry_line = na
+var line bearish_stop_line = na
+var line bearish_target1_line = na
+var line bearish_target2_line = na
+
+if bullish_star and show_targets
+    line.delete(bullish_entry_line)
+    line.delete(bullish_stop_line)
+    line.delete(bullish_target1_line)
+    line.delete(bullish_target2_line)
+    
+    bullish_entry_line := line.new(bar_index, bullish_entry, bar_index + 10, bullish_entry, color=color.blue, style=line.style_dashed, width=1)
+    bullish_stop_line := line.new(bar_index, bullish_stop, bar_index + 10, bullish_stop, color=color.red, style=line.style_solid, width=2)
+    bullish_target1_line := line.new(bar_index, bullish_target1, bar_index + 10, bullish_target1, color=color.green, style=line.style_dashed, width=1)
+    bullish_target2_line := line.new(bar_index, bullish_target2, bar_index + 10, bullish_target2, color=color.lime, style=line.style_dashed, width=1)
+
+if bearish_star and show_targets
+    line.delete(bearish_entry_line)
+    line.delete(bearish_stop_line)
+    line.delete(bearish_target1_line)
+    line.delete(bearish_target2_line)
+    
+    bearish_entry_line := line.new(bar_index, bearish_entry, bar_index + 10, bearish_entry, color=color.blue, style=line.style_dashed, width=1)
+    bearish_stop_line := line.new(bar_index, bearish_stop, bar_index + 10, bearish_stop, color=color.red, style=line.style_solid, width=2)
+    bearish_target1_line := line.new(bar_index, bearish_target1, bar_index + 10, bearish_target1, color=color.orange, style=line.style_dashed, width=1)
+    bearish_target2_line := line.new(bar_index, bearish_target2, bar_index + 10, bearish_target2, color=color.red, style=line.style_dashed, width=1)
+
+// ═════════════════ ENHANCED DASHBOARD ═════════════════
+var table dashboard = table.new(position.bottom_right, 2, 5, bgcolor=color.new(color.black, 10), frame_color=color.white, frame_width=1)
+
+if barstate.islast
+    table.cell(dashboard, 0, 0, "Star Patterns PRO", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small)
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    
+    table.cell(dashboard, 0, 1, "Morning Star", text_color=color.white, text_size=size.tiny)
+    ms_status = bullish_star ? "✓ " + str.tostring(math.round(bullish_quality)) + "%" : "—"
+    ms_color = bullish_star ? (bullish_quality >= 80 ? color.new(color.lime, 50) : color.new(color.green, 50)) : na
+    table.cell(dashboard, 1, 1, ms_status, bgcolor=ms_color, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 2, "Evening Star", text_color=color.white, text_size=size.tiny)
+    es_status = bearish_star ? "✓ " + str.tostring(math.round(bearish_quality)) + "%" : "—"
+    es_color = bearish_star ? (bearish_quality >= 80 ? color.new(color.red, 50) : color.new(color.maroon, 50)) : na
+    table.cell(dashboard, 1, 2, es_status, bgcolor=es_color, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 3, "Volume", text_color=color.white, text_size=size.tiny)
+    vol_status = check_volume() ? "✓ High" : "○ Normal"
+    table.cell(dashboard, 1, 3, vol_status, text_color=check_volume() ? color.green : color.gray, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 4, "Filters", text_color=color.white, text_size=size.tiny)
+    filter_count = (use_volume_filter ? 1 : 0) + (use_trend_filter ? 1 : 0) + (use_sr_filter ? 1 : 0)
+    table.cell(dashboard, 1, 4, str.tostring(filter_count) + " Active", text_color=color.yellow, text_size=size.tiny)
+
+// ═════════════════ MCP OUTPUT ═════════════════
+plot(bullish_star ? 1 : 0, "Bullish_Morning_Star_Signal", display=display.data_window)
+plot(bearish_star ? 1 : 0, "Bearish_Evening_Star_Signal", display=display.data_window)
+plot(bullish_quality, "Bullish_Quality_Score", display=display.data_window)
+plot(bearish_quality, "Bearish_Quality_Score", display=display.data_window)
+plot(bullish_entry, "Bullish_Entry_Price", display=display.data_window)
+plot(bullish_stop, "Bullish_Stop_Loss", display=display.data_window)
+plot(bearish_entry, "Bearish_Entry_Price", display=display.data_window)
+plot(bearish_stop, "Bearish_Stop_Loss", display=display.data_window)
+
+// ═════════════════ ALERTS - FIXED ═════════════════
+bullish_alert_condition = bullish_star and (not alert_only_high_quality or bullish_quality >= 80)
+bearish_alert_condition = bearish_star and (not alert_only_high_quality or bearish_quality >= 80)
+
+alertcondition(bullish_alert_condition, 
+     title="Bullish Morning Star Detected", 
+     message="🟢 BULLISH Morning Star | Ticker: {{ticker}} | TF: {{interval}} | Check chart for entry/stop levels")
+
+alertcondition(bearish_alert_condition, 
+     title="Bearish Evening Star Detected", 
+     message="🔴 BEARISH Evening Star | Ticker: {{ticker}} | TF: {{interval}} | Check chart for entry/stop levels")
+
+alertcondition(bullish_high_quality, 
+     title="HIGH QUALITY Bullish Morning Star", 
+     message="⭐ HIGH QUALITY Morning Star (80%+) | {{ticker}} {{interval}}")
+
+alertcondition(bearish_high_quality, 
+     title="HIGH QUALITY Bearish Evening Star", 
+     message="⭐ HIGH QUALITY Evening Star (80%+) | {{ticker}} {{interval}}")

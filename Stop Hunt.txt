@@ -1,0 +1,353 @@
+//@version=6
+indicator("Liquidity Grab Detector Ultimate Enhanced", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+//==============================================================================
+// INPUTS - OPTIMIZED DEFAULTS
+//==============================================================================
+lookbackBars = input.int(7, "Lookback for High/Low", minval=2, group="Detection")
+minRetrace = input.float(0.2, "Min Retrace Percent", minval=0.1, maxval=0.9, step=0.1, group="Detection")
+useCloseConfirmation = input.bool(true, "Confirm by Close Back Inside", group="Detection")
+
+useVolume = input.bool(false, "Volume Spike Confirmation", group="Volume")
+volumeMult = input.float(1.5, "Volume Spike Multiplier", minval=1.0, maxval=5.0, step=0.1, group="Volume")
+volLength = input.int(20, "Volume Average Length", minval=5, group="Volume")
+
+useTrendFilter = input.bool(false, "Use EMA Trend Filter", group="Trend")
+emaLength = input.int(50, "EMA Length", minval=10, group="Trend")
+trendStrength = input.string("Any Trend", "Hunt in", options=["Weak Trend", "Strong Trend", "Any Trend"], group="Trend")
+
+useAdxFilter = input.bool(false, "Use ADX Filter", group="ADX")
+adxLen = input.int(14, "ADX Length", minval=5, group="ADX")
+adxThreshold = input.float(25, "ADX Threshold", minval=10, maxval=50, step=5, group="ADX")
+
+useRoundNumbers = input.bool(true, "Detect Round Numbers", group="Advanced")
+roundIncrement = input.float(5.0, "Round Number Increment", minval=1.0, group="Advanced")
+detectEqualLevels = input.bool(true, "Detect Equal Highs/Lows", group="Advanced")
+equalTolerance = input.float(0.15, "Equal Level Tolerance Percent", minval=0.05, maxval=0.5, step=0.05, group="Advanced")
+
+showLabels = input.bool(true, "Show Labels", group="Display")
+showZones = input.bool(true, "Show Grab Zones", group="Display")
+showStats = input.bool(true, "Show Statistics", group="Display")
+maxBars = input.int(100, "Max Bars to Display", minval=10, maxval=200, group="Display")
+
+bullColor = input.color(color.new(#00ff00, 0), "Bullish Grab", group="Colors")
+bearColor = input.color(color.new(#ff0000, 0), "Bearish Grab", group="Colors")
+bullZone = input.color(color.new(#00ff00, 85), "Bullish Zone", group="Colors")
+bearZone = input.color(color.new(#ff0000, 85), "Bearish Zone", group="Colors")
+emaColor = input.color(color.orange, "EMA Color", group="Colors")
+
+//==============================================================================
+// TYPES
+//==============================================================================
+type LiquidityGrab
+    float level
+    int bar_idx
+    bool is_bullish
+    float strength
+    bool volume_confirmed
+    bool round_number
+    bool equal_level
+    bool trend_aligned
+    float retrace_pct
+    string grab_type
+    box zone_box
+    label grab_label
+
+//==============================================================================
+// VARIABLES
+//==============================================================================
+var array<LiquidityGrab> grabs = array.new<LiquidityGrab>()
+var int bullish_grabs = 0
+var int bearish_grabs = 0
+var int successful_bull = 0
+var int successful_bear = 0
+
+//==============================================================================
+// FUNCTIONS
+//==============================================================================
+is_round_number(price) =>
+    if not useRoundNumbers
+        false
+    else
+        remainder = price % roundIncrement
+        tolerance = roundIncrement * 0.1
+        remainder < tolerance or remainder > (roundIncrement - tolerance)
+
+detect_equal_level(current_level, is_high) =>
+    if not detectEqualLevels
+        [false, 0]
+    else
+        count = 0
+        tolerance = current_level * (equalTolerance / 100)
+        
+        for i = 1 to 50
+            if is_high
+                if math.abs(high[i] - current_level) < tolerance
+                    count += 1
+            else
+                if math.abs(low[i] - current_level) < tolerance
+                    count += 1
+        
+        [count >= 2, count]
+
+calculate_strength(retracePct, volConfirmed, isRound, isEqual, trendAligned) =>
+    strength = 0.0
+    strength += retracePct * 30
+    strength += volConfirmed ? 25 : 0
+    strength += isRound ? 15 : 0
+    strength += isEqual ? 20 : 0
+    strength += trendAligned ? 10 : 0
+    math.min(strength, 100)
+
+//==============================================================================
+// INDICATORS
+//==============================================================================
+ema = ta.ema(close, emaLength)
+plot(useTrendFilter ? ema : na, "EMA", emaColor, 2)
+
+volAvg = ta.sma(volume, volLength)
+volSpike = volume > volAvg * volumeMult
+
+[plusDI, minusDI, adx] = ta.dmi(adxLen, adxLen)
+
+prevHigh = ta.highest(high[1], lookbackBars)
+prevLow = ta.lowest(low[1], lookbackBars)
+
+//==============================================================================
+// FILTER LOGIC
+//==============================================================================
+trendUp = close > ema
+trendDown = close < ema
+
+adxCondition = true
+if useAdxFilter
+    if trendStrength == "Weak Trend"
+        adxCondition := adx < adxThreshold
+    else if trendStrength == "Strong Trend"
+        adxCondition := adx > adxThreshold
+
+volumeCondition = useVolume ? volSpike : true
+trendConditionBull = useTrendFilter ? trendUp : true
+trendConditionBear = useTrendFilter ? trendDown : true
+
+//==============================================================================
+// DETECTION
+//==============================================================================
+bearishGrab = false
+bearRetrace = 0.0
+bearLevel = 0.0
+
+if high > prevHigh
+    bearLevel := prevHigh
+    wickAbove = high - prevHigh
+    
+    if useCloseConfirmation
+        retraceAmount = prevHigh - close
+        bearRetrace := wickAbove > 0 ? math.min(retraceAmount / wickAbove, 1.0) : 0.0
+        
+        if bearRetrace >= minRetrace and volumeCondition and adxCondition and trendConditionBear
+            bearishGrab := true
+    else
+        if volumeCondition and adxCondition and trendConditionBear
+            bearishGrab := true
+            bearRetrace := 0.5
+
+bullishGrab = false
+bullRetrace = 0.0
+bullLevel = 0.0
+
+if low < prevLow
+    bullLevel := prevLow
+    wickBelow = prevLow - low
+    
+    if useCloseConfirmation
+        retraceAmount = close - prevLow
+        bullRetrace := wickBelow > 0 ? math.min(retraceAmount / wickBelow, 1.0) : 0.0
+        
+        if bullRetrace >= minRetrace and volumeCondition and adxCondition and trendConditionBull
+            bullishGrab := true
+    else
+        if volumeCondition and adxCondition and trendConditionBull
+            bullishGrab := true
+            bullRetrace := 0.5
+
+//==============================================================================
+// CREATE OBJECTS
+//==============================================================================
+if bearishGrab
+    isRound = is_round_number(bearLevel)
+    [isEqual, equalCount] = detect_equal_level(bearLevel, true)
+    
+    strength = calculate_strength(bearRetrace, volumeCondition, isRound, isEqual, trendConditionBear)
+    
+    grabType = ""
+    if isEqual
+        grabType := "EQUAL HIGH"
+    else if isRound
+        grabType := "ROUND NUMBER"
+    else
+        grabType := "RESISTANCE"
+    
+    grabLabel = label(na)
+    zoneBox = box(na)
+    
+    if showLabels
+        labelText = "LG " + grabType + " " + str.tostring(math.round(strength)) + "%"
+        grabLabel := label.new(bar_index, high, labelText, style=label.style_label_down, color=bearColor, textcolor=color.white, size=strength > 70 ? size.normal : size.small)
+    
+    if showZones
+        zoneBox := box.new(bar_index - 1, high, bar_index + 5, bearLevel, border_color=bearColor, bgcolor=bearZone, border_width=strength > 70 ? 2 : 1)
+    
+    grab = LiquidityGrab.new(bearLevel, bar_index, false, strength, volumeCondition, isRound, isEqual, trendConditionBear, bearRetrace, grabType, zoneBox, grabLabel)
+    
+    grabs.unshift(grab)
+    bearish_grabs += 1
+
+if bullishGrab
+    isRound = is_round_number(bullLevel)
+    [isEqual, equalCount] = detect_equal_level(bullLevel, false)
+    
+    strength = calculate_strength(bullRetrace, volumeCondition, isRound, isEqual, trendConditionBull)
+    
+    grabType = ""
+    if isEqual
+        grabType := "EQUAL LOW"
+    else if isRound
+        grabType := "ROUND NUMBER"
+    else
+        grabType := "SUPPORT"
+    
+    grabLabel = label(na)
+    zoneBox = box(na)
+    
+    if showLabels
+        labelText = "LG " + grabType + " " + str.tostring(math.round(strength)) + "%"
+        grabLabel := label.new(bar_index, low, labelText, style=label.style_label_up, color=bullColor, textcolor=color.white, size=strength > 70 ? size.normal : size.small)
+    
+    if showZones
+        zoneBox := box.new(bar_index - 1, bullLevel, bar_index + 5, low, border_color=bullColor, bgcolor=bullZone, border_width=strength > 70 ? 2 : 1)
+    
+    grab = LiquidityGrab.new(bullLevel, bar_index, true, strength, volumeCondition, isRound, isEqual, trendConditionBull, bullRetrace, grabType, zoneBox, grabLabel)
+    
+    grabs.unshift(grab)
+    bullish_grabs += 1
+
+//==============================================================================
+// CLEANUP
+//==============================================================================
+if grabs.size() > 0
+    for i = grabs.size() - 1 to 0
+        grab = grabs.get(i)
+        bars_since = bar_index - grab.bar_idx
+        
+        if showZones and not na(grab.zone_box)
+            box.set_right(grab.zone_box, bar_index + 5)
+        
+        if bars_since == 10
+            if grab.is_bullish
+                if close > grab.level
+                    successful_bull += 1
+            else
+                if close < grab.level
+                    successful_bear += 1
+        
+        if bars_since > maxBars
+            if not na(grab.zone_box)
+                box.delete(grab.zone_box)
+            if not na(grab.grab_label)
+                label.delete(grab.grab_label)
+            grabs.remove(i)
+
+//==============================================================================
+// STATISTICS
+//==============================================================================
+if showStats and barstate.islast
+    var table statsTable = table.new(position.top_right, 3, 7, bgcolor=color.new(color.black, 10), border_width=2, border_color=color.gray, frame_width=1, frame_color=color.gray)
+    
+    table.cell(statsTable, 0, 0, "Liquidity Grab Stats", bgcolor=color.new(color.gray, 20), text_color=color.white, text_size=size.normal)
+    table.cell(statsTable, 1, 0, "Bullish", bgcolor=color.new(bullColor, 70), text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 2, 0, "Bearish", bgcolor=color.new(bearColor, 70), text_color=color.white, text_size=size.small)
+    
+    table.cell(statsTable, 0, 1, "Total Grabs", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 1, str.tostring(bullish_grabs), text_color=bullColor, text_size=size.small)
+    table.cell(statsTable, 2, 1, str.tostring(bearish_grabs), text_color=bearColor, text_size=size.small)
+    
+    table.cell(statsTable, 0, 2, "Successful", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 2, str.tostring(successful_bull), text_color=bullColor, text_size=size.small)
+    table.cell(statsTable, 2, 2, str.tostring(successful_bear), text_color=bearColor, text_size=size.small)
+    
+    bull_rate = bullish_grabs > 0 ? (successful_bull / bullish_grabs) * 100 : 0
+    bear_rate = bearish_grabs > 0 ? (successful_bear / bearish_grabs) * 100 : 0
+    
+    bull_rate_color = bull_rate > 60 ? color.lime : bull_rate > 40 ? color.yellow : color.red
+    bear_rate_color = bear_rate > 60 ? color.lime : bear_rate > 40 ? color.yellow : color.red
+    
+    table.cell(statsTable, 0, 3, "Success Rate", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 3, str.tostring(bull_rate, "#.#") + "%", text_color=bull_rate_color, text_size=size.small)
+    table.cell(statsTable, 2, 3, str.tostring(bear_rate, "#.#") + "%", text_color=bear_rate_color, text_size=size.small)
+    
+    table.cell(statsTable, 0, 4, "Current ADX", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 4, str.tostring(adx, "#.#"), text_color=color.white, text_size=size.small)
+    
+    adxStatusText = adx < adxThreshold ? "RANGING" : "TRENDING"
+    adxStatusColor = adx < adxThreshold ? color.yellow : color.orange
+    table.cell(statsTable, 2, 4, adxStatusText, text_color=adxStatusColor, text_size=size.small)
+    
+    vol_bull = 0
+    vol_bear = 0
+    for grab in grabs
+        if grab.volume_confirmed
+            if grab.is_bullish
+                vol_bull += 1
+            else
+                vol_bear += 1
+    
+    table.cell(statsTable, 0, 5, "Vol Confirmed", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 5, str.tostring(vol_bull), text_color=bullColor, text_size=size.small)
+    table.cell(statsTable, 2, 5, str.tostring(vol_bear), text_color=bearColor, text_size=size.small)
+    
+    avg_bull_str = 0.0
+    avg_bear_str = 0.0
+    bull_count = 0
+    bear_count = 0
+    
+    for grab in grabs
+        if grab.is_bullish
+            avg_bull_str += grab.strength
+            bull_count += 1
+        else
+            avg_bear_str += grab.strength
+            bear_count += 1
+    
+    avg_bull_str := bull_count > 0 ? avg_bull_str / bull_count : 0
+    avg_bear_str := bear_count > 0 ? avg_bear_str / bear_count : 0
+    
+    table.cell(statsTable, 0, 6, "Avg Strength", text_color=color.white, text_size=size.small)
+    table.cell(statsTable, 1, 6, str.tostring(avg_bull_str, "#.#"), text_color=bullColor, text_size=size.small)
+    table.cell(statsTable, 2, 6, str.tostring(avg_bear_str, "#.#"), text_color=bearColor, text_size=size.small)
+
+//==============================================================================
+// ALERTS
+//==============================================================================
+bullGrabAlert = bullish_grabs > bullish_grabs[1]
+bearGrabAlert = bearish_grabs > bearish_grabs[1]
+
+var bool strongBullAlert = false
+var bool strongBearAlert = false
+
+if grabs.size() > 0
+    lastGrab = grabs.get(0)
+    if bar_index == lastGrab.bar_idx
+        if lastGrab.strength > 70
+            if lastGrab.is_bullish
+                strongBullAlert := true
+            else
+                strongBearAlert := true
+        else
+            strongBullAlert := false
+            strongBearAlert := false
+
+alertcondition(bullGrabAlert, "Bullish Liquidity Grab", "Bullish liquidity grab detected")
+alertcondition(bearGrabAlert, "Bearish Liquidity Grab", "Bearish liquidity grab detected")
+alertcondition(strongBullAlert, "Strong Bullish Grab", "HIGH STRENGTH bullish grab")
+alertcondition(strongBearAlert, "Strong Bearish Grab", "HIGH STRENGTH bearish grab")

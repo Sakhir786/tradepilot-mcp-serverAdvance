@@ -1,0 +1,247 @@
+//@version=6
+indicator("Candlestick Patterns PRO", shorttitle="CndlsPRO", overlay=true)
+
+// ═════════════════ INPUTS ═════════════════
+show_reversal_patterns = input.bool(true, "Show Reversal Patterns", group="Pattern Selection")
+show_continuation_patterns = input.bool(true, "Show Continuation Patterns", group="Pattern Selection")
+show_indecision_patterns = input.bool(true, "Show Indecision Patterns", group="Pattern Selection")
+
+doji_size = input.float(0.05, "Doji Body Size", minval=0.01, maxval=0.15, step=0.01, group="Sensitivity")
+body_avg_period = input.int(14, "Body Average Period", minval=5, group="Sensitivity")
+
+use_volume_filter = input.bool(false, "Volume Confirmation", group="Filters")
+volume_multiplier = input.float(1.3, "Volume Factor", minval=1.0, maxval=3.0, step=0.1, group="Filters")
+
+use_trend_filter = input.bool(false, "Trend Context", group="Filters")
+trend_ma_length = input.int(50, "Trend MA Length", minval=20, group="Filters")
+
+show_quality = input.bool(true, "Show Quality Scores", group="Display")
+min_quality = input.int(50, "Minimum Quality", minval=0, maxval=100, group="Filters")
+
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+alert_reversal_only = input.bool(true, "Reversal Patterns Only", group="Alerts")
+
+color_bullish = input.color(color.new(color.green, 0), "Bullish Color", group="Colors")
+color_bearish = input.color(color.new(color.red, 0), "Bearish Color", group="Colors")
+color_neutral = input.color(color.new(color.yellow, 0), "Neutral Color", group="Colors")
+
+// ═════════════════ CALCULATIONS ═════════════════
+c_open = open
+c_high = high
+c_low = low
+c_close = close
+c_body = math.abs(c_close - c_open)
+c_range = c_high - c_low
+c_upper_wick = c_high - math.max(c_open, c_close)
+c_lower_wick = math.min(c_open, c_close) - c_low
+
+p1_open = open[1]
+p1_high = high[1]
+p1_low = low[1]
+p1_close = close[1]
+p1_body = math.abs(p1_close - p1_open)
+
+p2_open = open[2]
+p2_high = high[2]
+p2_low = low[2]
+p2_close = close[2]
+p2_body = math.abs(p2_close - p2_open)
+
+avg_body = ta.sma(c_body, body_avg_period)
+avg_vol = ta.sma(volume, 20)
+avg_range = ta.sma(c_range, 14)
+
+is_bullish = c_close > c_open
+is_bearish = c_close < c_open
+p1_bullish = p1_close > p1_open
+p1_bearish = p1_close < p1_open
+p2_bullish = p2_close > p2_open
+p2_bearish = p2_close < p2_open
+
+trend_ma = ta.sma(close, trend_ma_length)
+is_uptrend = close > trend_ma
+is_downtrend = close < trend_ma
+
+has_volume = volume >= (avg_vol * volume_multiplier)
+
+// ═════════════════ PATTERN DETECTION FUNCTIONS ═════════════════
+
+detect_doji() =>
+    c_body <= (c_range * doji_size)
+
+detect_hammer() =>
+    c_range > 3 * c_body and (c_close - c_low) / (c_range + 0.001) > 0.6 and (c_open - c_low) / (c_range + 0.001) > 0.6
+
+detect_inverted_hammer() =>
+    c_range > 3 * c_body and (c_high - c_close) / (c_range + 0.001) > 0.6 and (c_high - c_open) / (c_range + 0.001) > 0.6
+
+detect_hanging_man() =>
+    c_range > 4 * c_body and (c_close - c_low) / (c_range + 0.001) >= 0.75 and (c_open - c_low) / (c_range + 0.001) >= 0.75 and p1_high < c_open and p2_high < c_open
+
+detect_shooting_star() =>
+    p1_bullish and c_open > p1_close and c_upper_wick >= math.abs(c_open - c_close) * 3 and c_lower_wick <= math.abs(c_open - c_close)
+
+detect_morning_star() =>
+    p2_bearish and math.max(p1_open, p1_close) < p2_close and c_open > math.max(p1_open, p1_close) and is_bullish
+
+detect_evening_star() =>
+    p2_bullish and math.min(p1_open, p1_close) > p2_close and c_open < math.min(p1_open, p1_close) and is_bearish
+
+detect_bullish_engulfing() =>
+    p1_bearish and is_bullish and c_close >= p1_open and p1_close >= c_open and c_body > p1_body
+
+detect_bearish_engulfing() =>
+    p1_bullish and is_bearish and c_open >= p1_close and p1_open >= c_close and c_body > p1_body
+
+detect_bullish_harami() =>
+    p1_bearish and is_bullish and c_close <= p1_open and p1_close <= c_open and c_body < p1_body
+
+detect_bearish_harami() =>
+    p1_bullish and is_bearish and c_open <= p1_close and p1_open <= c_close and c_body < p1_body
+
+detect_piercing_line() =>
+    p1_bearish and c_open < p1_low and c_close > p1_close + (p1_body / 2) and c_close < p1_open
+
+detect_dark_cloud_cover() =>
+    p1_bullish and ((p1_close + p1_open) / 2) > c_close and is_bearish and c_open > p1_close and c_close > p1_open and (c_body / (c_range + 0.001)) > 0.6
+
+detect_bullish_kicker() =>
+    p1_bearish and c_open >= p1_open and is_bullish
+
+detect_bearish_kicker() =>
+    p1_bullish and c_open <= p1_open and is_bearish
+
+// ═════════════════ EXECUTE PATTERN DETECTION ═════════════════
+doji = detect_doji()
+hammer = detect_hammer()
+inverted_hammer = detect_inverted_hammer()
+hanging_man = detect_hanging_man()
+shooting_star = detect_shooting_star()
+morning_star = detect_morning_star()
+evening_star = detect_evening_star()
+bullish_engulfing = detect_bullish_engulfing()
+bearish_engulfing = detect_bearish_engulfing()
+bullish_harami = detect_bullish_harami()
+bearish_harami = detect_bearish_harami()
+piercing_line = detect_piercing_line()
+dark_cloud = detect_dark_cloud_cover()
+bullish_kicker = detect_bullish_kicker()
+bearish_kicker = detect_bearish_kicker()
+
+// ═════════════════ QUALITY SCORING ═════════════════
+calc_quality(pattern_type) =>
+    float score = 50.0
+    
+    if not use_volume_filter or has_volume
+        score += 20.0
+    
+    if not use_trend_filter
+        score += 20.0
+    else
+        if pattern_type == "bullish" and is_downtrend
+            score += 20.0
+        else if pattern_type == "bearish" and is_uptrend
+            score += 20.0
+    
+    if c_body >= avg_body
+        score += 10.0
+    
+    score
+
+quality_bullish = calc_quality("bullish")
+quality_bearish = calc_quality("bearish")
+quality_neutral = 60.0
+
+// ═════════════════ APPLY FILTERS ═════════════════
+hammer_signal = show_reversal_patterns and hammer and quality_bullish >= min_quality
+inverted_hammer_signal = show_reversal_patterns and inverted_hammer and quality_bullish >= min_quality
+morning_star_signal = show_reversal_patterns and morning_star and quality_bullish >= min_quality
+bullish_engulfing_signal = show_reversal_patterns and bullish_engulfing and quality_bullish >= min_quality
+bullish_harami_signal = show_reversal_patterns and bullish_harami and quality_bullish >= min_quality
+piercing_line_signal = show_reversal_patterns and piercing_line and quality_bullish >= min_quality
+bullish_kicker_signal = show_reversal_patterns and bullish_kicker and quality_bullish >= min_quality
+
+hanging_man_signal = show_reversal_patterns and hanging_man and quality_bearish >= min_quality
+shooting_star_signal = show_reversal_patterns and shooting_star and quality_bearish >= min_quality
+evening_star_signal = show_reversal_patterns and evening_star and quality_bearish >= min_quality
+bearish_engulfing_signal = show_reversal_patterns and bearish_engulfing and quality_bearish >= min_quality
+bearish_harami_signal = show_reversal_patterns and bearish_harami and quality_bearish >= min_quality
+dark_cloud_signal = show_reversal_patterns and dark_cloud and quality_bearish >= min_quality
+bearish_kicker_signal = show_reversal_patterns and bearish_kicker and quality_bearish >= min_quality
+
+doji_signal = show_indecision_patterns and doji and quality_neutral >= min_quality
+
+// ═════════════════ PLOT PATTERNS ═════════════════
+plotshape(hammer_signal, title="Hammer", style=shape.diamond, location=location.belowbar, color=color_bullish, size=size.small, text="H")
+plotshape(inverted_hammer_signal, title="Inverted Hammer", style=shape.diamond, location=location.belowbar, color=color_bullish, size=size.small, text="IH")
+plotshape(morning_star_signal, title="Morning Star", style=shape.triangleup, location=location.belowbar, color=color_bullish, size=size.small, text="MS")
+plotshape(bullish_engulfing_signal, title="Bullish Engulfing", style=shape.triangleup, location=location.belowbar, color=color_bullish, size=size.normal, text="BE")
+plotshape(bullish_harami_signal, title="Bullish Harami", style=shape.circle, location=location.belowbar, color=color_bullish, size=size.tiny, text="BH")
+plotshape(piercing_line_signal, title="Piercing Line", style=shape.triangleup, location=location.belowbar, color=color_bullish, size=size.small, text="PL")
+plotshape(bullish_kicker_signal, title="Bullish Kicker", style=shape.triangleup, location=location.belowbar, color=color_bullish, size=size.large, text="BK")
+
+plotshape(hanging_man_signal, title="Hanging Man", style=shape.diamond, location=location.abovebar, color=color_bearish, size=size.small, text="HM")
+plotshape(shooting_star_signal, title="Shooting Star", style=shape.diamond, location=location.abovebar, color=color_bearish, size=size.small, text="SS")
+plotshape(evening_star_signal, title="Evening Star", style=shape.triangledown, location=location.abovebar, color=color_bearish, size=size.small, text="ES")
+plotshape(bearish_engulfing_signal, title="Bearish Engulfing", style=shape.triangledown, location=location.abovebar, color=color_bearish, size=size.normal, text="BE")
+plotshape(bearish_harami_signal, title="Bearish Harami", style=shape.circle, location=location.abovebar, color=color_bearish, size=size.tiny, text="BH")
+plotshape(dark_cloud_signal, title="Dark Cloud", style=shape.triangledown, location=location.abovebar, color=color_bearish, size=size.small, text="DC")
+plotshape(bearish_kicker_signal, title="Bearish Kicker", style=shape.triangledown, location=location.abovebar, color=color_bearish, size=size.large, text="BK")
+
+plotshape(doji_signal, title="Doji", style=shape.cross, location=location.abovebar, color=color_neutral, size=size.tiny, text="D")
+
+// ═════════════════ PATTERN COUNTERS ═════════════════
+bullish_count = (hammer_signal ? 1 : 0) + (inverted_hammer_signal ? 1 : 0) + (morning_star_signal ? 1 : 0) + (bullish_engulfing_signal ? 1 : 0) + (bullish_harami_signal ? 1 : 0) + (piercing_line_signal ? 1 : 0) + (bullish_kicker_signal ? 1 : 0)
+
+bearish_count = (hanging_man_signal ? 1 : 0) + (shooting_star_signal ? 1 : 0) + (evening_star_signal ? 1 : 0) + (bearish_engulfing_signal ? 1 : 0) + (bearish_harami_signal ? 1 : 0) + (dark_cloud_signal ? 1 : 0) + (bearish_kicker_signal ? 1 : 0)
+
+neutral_count = doji_signal ? 1 : 0
+
+// ═════════════════ DASHBOARD ═════════════════
+var table dashboard = table.new(position.bottom_right, 2, 5, bgcolor=color.new(color.black, 10), frame_color=color.white, frame_width=1)
+
+if barstate.islast
+    table.cell(dashboard, 0, 0, "Candle Patterns", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small)
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    
+    table.cell(dashboard, 0, 1, "Bullish", text_color=color.white, text_size=size.tiny)
+    string bull_text = bullish_count > 0 ? str.tostring(bullish_count) + " Active" : "None"
+    color bull_bg = bullish_count > 0 ? color.new(color.green, 50) : na
+    table.cell(dashboard, 1, 1, bull_text, bgcolor=bull_bg, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 2, "Bearish", text_color=color.white, text_size=size.tiny)
+    string bear_text = bearish_count > 0 ? str.tostring(bearish_count) + " Active" : "None"
+    color bear_bg = bearish_count > 0 ? color.new(color.red, 50) : na
+    table.cell(dashboard, 1, 2, bear_text, bgcolor=bear_bg, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 3, "Neutral", text_color=color.white, text_size=size.tiny)
+    string neut_text = neutral_count > 0 ? "Doji" : "None"
+    color neut_bg = neutral_count > 0 ? color.new(color.yellow, 50) : na
+    table.cell(dashboard, 1, 3, neut_text, bgcolor=neut_bg, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 4, "Quality", text_color=color.white, text_size=size.tiny)
+    float avg_qual = bullish_count > 0 ? quality_bullish : bearish_count > 0 ? quality_bearish : quality_neutral
+    string qual_text = str.tostring(math.round(avg_qual)) + "%"
+    color qual_color = avg_qual >= 80 ? color.lime : avg_qual >= 60 ? color.yellow : color.orange
+    table.cell(dashboard, 1, 4, qual_text, text_color=qual_color, text_size=size.tiny)
+
+// ═════════════════ MCP OUTPUT ═════════════════
+plot(bullish_count, "Bullish_Count", display=display.data_window)
+plot(bearish_count, "Bearish_Count", display=display.data_window)
+plot(neutral_count, "Neutral_Count", display=display.data_window)
+plot(quality_bullish, "Bull_Quality", display=display.data_window)
+plot(quality_bearish, "Bear_Quality", display=display.data_window)
+
+// ═════════════════ ALERTS ═════════════════
+any_bullish = bullish_count > 0
+any_bearish = bearish_count > 0
+
+alertcondition(any_bullish and enable_alerts, title="Bullish Pattern", message="Bullish pattern on {{ticker}} {{interval}}")
+alertcondition(any_bearish and enable_alerts, title="Bearish Pattern", message="Bearish pattern on {{ticker}} {{interval}}")
+alertcondition(doji_signal and enable_alerts and not alert_reversal_only, title="Doji", message="Doji on {{ticker}} {{interval}}")
+
+strong_bullish = bullish_engulfing_signal or bullish_kicker_signal
+strong_bearish = bearish_engulfing_signal or bearish_kicker_signal
+
+alertcondition(strong_bullish and enable_alerts, title="STRONG Bullish", message="STRONG bullish on {{ticker}} {{interval}}")
+alertcondition(strong_bearish and enable_alerts, title="STRONG Bearish", message="STRONG bearish on {{ticker}} {{interval}}")

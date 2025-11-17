@@ -1,0 +1,352 @@
+//@version=6
+indicator("Inside Bar PRO - Enhanced", shorttitle="IB PRO", overlay=true)
+
+// ═════════════════ INPUTS ═════════════════
+show_inside_bars = input.bool(true, "Show Inside Bars", group="Display")
+show_breakouts = input.bool(true, "Show Breakout Signals", group="Display")
+
+// Mother Bar Requirements
+min_mother_size = input.float(1.5, "Min Mother Bar Size", minval=0.5, maxval=3.0, step=0.1, group="Pattern", tooltip="Mother bar must be this times average range")
+max_inside_ratio = input.float(0.75, "Max Inside Bar Ratio", minval=0.3, maxval=0.95, step=0.05, group="Pattern", tooltip="Inside bar should be smaller than this % of mother")
+
+// Filters
+use_volume_filter = input.bool(true, "Volume Confirmation on Breakout", group="Filters")
+volume_multiplier = input.float(1.5, "Breakout Volume Factor", minval=1.0, maxval=3.0, step=0.1, group="Filters")
+
+use_trend_filter = input.bool(false, "Trend Context Filter", group="Filters")
+trend_ma_length = input.int(50, "Trend MA Length", minval=20, group="Filters")
+
+use_sr_filter = input.bool(false, "Support/Resistance Filter", group="Filters")
+sr_lookback = input.int(20, "S/R Lookback Period", minval=10, group="Filters")
+
+// Quality Settings
+show_quality = input.bool(true, "Show Quality Score", group="Display")
+min_quality = input.int(50, "Minimum Quality Score", minval=0, maxval=100, group="Filters")
+
+// Targets
+show_targets = input.bool(true, "Show Entry/Stop/Targets", group="Targets")
+long_target1_mult = input.float(1.0, "Long T1 Multiplier", minval=0.5, maxval=3.0, step=0.5, group="Targets")
+long_target2_mult = input.float(1.5, "Long T2 Multiplier", minval=1.0, maxval=5.0, step=0.5, group="Targets")
+short_target1_mult = input.float(1.0, "Short T1 Multiplier", minval=0.5, maxval=3.0, step=0.5, group="Targets")
+short_target2_mult = input.float(1.5, "Short T2 Multiplier", minval=1.0, maxval=5.0, step=0.5, group="Targets")
+
+// Alerts
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+alert_quality_min = input.int(70, "Alert Quality Minimum", minval=50, maxval=100, group="Alerts")
+
+// Colors
+color_inside_bull = input.color(color.new(color.lime, 50), "Inside Bar Bullish", group="Colors")
+color_inside_bear = input.color(color.new(color.orange, 50), "Inside Bar Bearish", group="Colors")
+color_breakout_bull = input.color(color.new(color.green, 0), "Bullish Breakout", group="Colors")
+color_breakout_bear = input.color(color.new(color.red, 0), "Bearish Breakout", group="Colors")
+
+// ═════════════════ CALCULATIONS ═════════════════
+// Average range for reference
+avg_range = ta.sma(high - low, 14)
+
+// Current and previous bar data
+current_high = high
+current_low = low
+current_open = open
+current_close = close
+current_range = high - low
+
+mother_high = high[1]
+mother_low = low[1]
+mother_open = open[1]
+mother_close = close[1]
+mother_range = high[1] - low[1]
+
+// ═════════════════ PATTERN DETECTION ═════════════════
+// Inside bar definition
+is_inside = current_high < mother_high and current_low > mother_low
+
+// Mother bar must be significant
+mother_is_large = mother_range >= (avg_range[1] * min_mother_size)
+
+// Inside bar should be notably smaller
+inside_ratio = current_range / math.max(mother_range, 0.0001)
+inside_is_tight = inside_ratio <= max_inside_ratio
+
+// Base pattern
+base_pattern = is_inside and mother_is_large and inside_is_tight
+
+// ═════════════════ QUALITY FILTERS - ALWAYS EXECUTE ═════════════════
+// Volume check
+avg_vol = ta.sma(volume, 20)
+has_volume = volume >= (avg_vol * volume_multiplier)
+
+// Trend context
+trend_ma = ta.sma(close, trend_ma_length)
+is_uptrend = close > trend_ma
+is_downtrend = close < trend_ma
+
+// Support/Resistance proximity
+highest_level = ta.highest(high, sr_lookback)
+lowest_level = ta.lowest(low, sr_lookback)
+near_resistance = (highest_level - current_high) / current_high < 0.02
+near_support = (current_low - lowest_level) / current_low < 0.02
+
+// ═════════════════ QUALITY SCORE CALCULATION ═════════════════
+float quality_score = 0.0
+
+// Base pattern (30 points)
+if base_pattern
+    quality_score += 30.0
+
+// Mother bar size quality (20 points)
+mother_size_ratio = mother_range / avg_range[1]
+if mother_size_ratio >= 2.0
+    quality_score += 20.0
+else if mother_size_ratio >= 1.5
+    quality_score += 15.0
+else if mother_size_ratio >= 1.0
+    quality_score += 10.0
+
+// Inside bar tightness (15 points)
+if inside_ratio < 0.4
+    quality_score += 15.0
+else if inside_ratio < 0.6
+    quality_score += 10.0
+else if inside_ratio < 0.75
+    quality_score += 5.0
+
+// Volume confirmation (15 points)
+if not use_volume_filter or has_volume
+    quality_score += 15.0
+
+// Trend alignment (10 points each direction)
+if not use_trend_filter
+    quality_score += 10.0
+else
+    if is_uptrend
+        quality_score += 5.0
+    if is_downtrend
+        quality_score += 5.0
+
+// S/R proximity (10 points)
+if not use_sr_filter
+    quality_score += 10.0
+else
+    if near_support or near_resistance
+        quality_score += 10.0
+
+// Final inside bar signal
+inside_bar_signal = show_inside_bars and base_pattern and quality_score >= min_quality
+
+// ═════════════════ BREAKOUT DETECTION ═════════════════
+// Track if we had inside bar on previous candle
+was_inside_bar = base_pattern[1] and quality_score[1] >= min_quality
+
+// Breakout conditions
+bullish_breakout = was_inside_bar and current_close > mother_high[1]
+bearish_breakout = was_inside_bar and current_close < mother_low[1]
+
+// Volume confirmed breakouts
+bull_breakout_confirmed = bullish_breakout and (not use_volume_filter or has_volume)
+bear_breakout_confirmed = bearish_breakout and (not use_volume_filter or has_volume)
+
+// Final breakout signals
+bullish_breakout_signal = show_breakouts and bull_breakout_confirmed
+bearish_breakout_signal = show_breakouts and bear_breakout_confirmed
+
+// ═════════════════ ENTRY/STOP/TARGET CALCULATIONS ═════════════════
+// For bullish breakout
+bull_entry = mother_high
+bull_stop = mother_low
+bull_risk = bull_entry - bull_stop
+bull_target1 = bull_entry + (bull_risk * long_target1_mult)
+bull_target2 = bull_entry + (bull_risk * long_target2_mult)
+
+// For bearish breakout
+bear_entry = mother_low
+bear_stop = mother_high
+bear_risk = bear_stop - bear_entry
+bear_target1 = bear_entry - (bear_risk * short_target1_mult)
+bear_target2 = bear_entry - (bear_risk * short_target2_mult)
+
+// ═════════════════ PLOT INSIDE BARS ═════════════════
+// Color code inside bars by direction bias
+inside_bar_color = current_close > current_open ? color_inside_bull : color_inside_bear
+barcolor(inside_bar_signal ? inside_bar_color : na, title="Inside Bar Color")
+
+// Plot marker for inside bar
+plotshape(inside_bar_signal, title="Inside Bar", style=shape.diamond, location=location.abovebar, color=color.new(color.yellow, 0), size=size.tiny, text="IB")
+
+// ═════════════════ PLOT BREAKOUTS ═════════════════
+plotshape(bullish_breakout_signal, title="Bullish Breakout", style=shape.triangleup, location=location.belowbar, color=color_breakout_bull, size=size.normal, text="BO")
+plotshape(bearish_breakout_signal, title="Bearish Breakout", style=shape.triangledown, location=location.abovebar, color=color_breakout_bear, size=size.normal, text="BO")
+
+// Background highlight for inside bars
+bgcolor(inside_bar_signal ? color.new(color.yellow, 90) : na, title="Inside Bar Background")
+
+// ═════════════════ PLOT MOTHER BAR LEVELS ═════════════════
+var line mother_high_line = na
+var line mother_low_line = na
+var label mother_high_label = na
+var label mother_low_label = na
+
+if inside_bar_signal
+    line.delete(mother_high_line)
+    line.delete(mother_low_line)
+    label.delete(mother_high_label)
+    label.delete(mother_low_label)
+    
+    mother_high_line := line.new(bar_index - 1, mother_high, bar_index + 10, mother_high, color=color.green, style=line.style_solid, width=2)
+    mother_low_line := line.new(bar_index - 1, mother_low, bar_index + 10, mother_low, color=color.red, style=line.style_solid, width=2)
+    
+    mother_high_label := label.new(bar_index + 10, mother_high, "HIGH", style=label.style_label_left, color=color.green, textcolor=color.white, size=size.small)
+    mother_low_label := label.new(bar_index + 10, mother_low, "LOW", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+
+// ═════════════════ PLOT BREAKOUT TARGETS ═════════════════
+var line bull_entry_line = na
+var line bull_stop_line = na
+var line bull_t1_line = na
+var line bull_t2_line = na
+var label bull_entry_label = na
+var label bull_stop_label = na
+var label bull_t1_label = na
+var label bull_t2_label = na
+
+var line bear_entry_line = na
+var line bear_stop_line = na
+var line bear_t1_line = na
+var line bear_t2_line = na
+var label bear_entry_label = na
+var label bear_stop_label = na
+var label bear_t1_label = na
+var label bear_t2_label = na
+
+if bullish_breakout_signal and show_targets
+    line.delete(bull_entry_line)
+    line.delete(bull_stop_line)
+    line.delete(bull_t1_line)
+    line.delete(bull_t2_line)
+    label.delete(bull_entry_label)
+    label.delete(bull_stop_label)
+    label.delete(bull_t1_label)
+    label.delete(bull_t2_label)
+    
+    bull_entry_line := line.new(bar_index, bull_entry, bar_index + 15, bull_entry, color=color.blue, style=line.style_solid, width=2)
+    bull_stop_line := line.new(bar_index, bull_stop, bar_index + 15, bull_stop, color=color.red, style=line.style_solid, width=2)
+    bull_t1_line := line.new(bar_index, bull_target1, bar_index + 15, bull_target1, color=color.green, style=line.style_dashed, width=1)
+    bull_t2_line := line.new(bar_index, bull_target2, bar_index + 15, bull_target2, color=color.lime, style=line.style_dashed, width=1)
+    
+    bull_entry_label := label.new(bar_index + 15, bull_entry, "ENTRY", style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.small)
+    bull_stop_label := label.new(bar_index + 15, bull_stop, "STOP", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+    bull_t1_label := label.new(bar_index + 15, bull_target1, "T1", style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny)
+    bull_t2_label := label.new(bar_index + 15, bull_target2, "T2", style=label.style_label_left, color=color.lime, textcolor=color.white, size=size.tiny)
+
+if bearish_breakout_signal and show_targets
+    line.delete(bear_entry_line)
+    line.delete(bear_stop_line)
+    line.delete(bear_t1_line)
+    line.delete(bear_t2_line)
+    label.delete(bear_entry_label)
+    label.delete(bear_stop_label)
+    label.delete(bear_t1_label)
+    label.delete(bear_t2_label)
+    
+    bear_entry_line := line.new(bar_index, bear_entry, bar_index + 15, bear_entry, color=color.blue, style=line.style_solid, width=2)
+    bear_stop_line := line.new(bar_index, bear_stop, bar_index + 15, bear_stop, color=color.red, style=line.style_solid, width=2)
+    bear_t1_line := line.new(bar_index, bear_target1, bar_index + 15, bear_target1, color=color.orange, style=line.style_dashed, width=1)
+    bear_t2_line := line.new(bar_index, bear_target2, bar_index + 15, bear_target2, color=color.red, style=line.style_dashed, width=1)
+    
+    bear_entry_label := label.new(bar_index + 15, bear_entry, "ENTRY", style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.small)
+    bear_stop_label := label.new(bar_index + 15, bear_stop, "STOP", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+    bear_t1_label := label.new(bar_index + 15, bear_target1, "T1", style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.tiny)
+    bear_t2_label := label.new(bar_index + 15, bear_target2, "T2", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny)
+
+// ═════════════════ DASHBOARD ═════════════════
+var table dashboard = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 10), frame_color=color.white, frame_width=1)
+
+if barstate.islast
+    table.cell(dashboard, 0, 0, "Inside Bar PRO", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small)
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    
+    table.cell(dashboard, 0, 1, "Pattern", text_color=color.white, text_size=size.tiny)
+    string pstat = inside_bar_signal ? "ACTIVE" : "Wait"
+    color pbg = inside_bar_signal ? color.new(color.yellow, 50) : na
+    table.cell(dashboard, 1, 1, pstat, bgcolor=pbg, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 2, "Quality", text_color=color.white, text_size=size.tiny)
+    string qstat = str.tostring(math.round(quality_score)) + "%"
+    color qcolor = quality_score >= 80 ? color.lime : quality_score >= 60 ? color.yellow : color.orange
+    table.cell(dashboard, 1, 2, qstat, text_color=qcolor, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 3, "Mother Size", text_color=color.white, text_size=size.tiny)
+    float msize = mother_range / avg_range[1]
+    string mstat = str.tostring(msize, "#.#") + "x"
+    table.cell(dashboard, 1, 3, mstat, text_color=msize >= 1.5 ? color.lime : color.gray, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 4, "Inside Ratio", text_color=color.white, text_size=size.tiny)
+    string rstat = str.tostring(math.round(inside_ratio * 100)) + "%"
+    table.cell(dashboard, 1, 4, rstat, text_color=inside_ratio < 0.5 ? color.lime : color.yellow, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 5, "Volume", text_color=color.white, text_size=size.tiny)
+    string vstat = has_volume ? "Strong" : "Normal"
+    table.cell(dashboard, 1, 5, vstat, text_color=has_volume ? color.lime : color.gray, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 6, "Trend", text_color=color.white, text_size=size.tiny)
+    string tstat = is_uptrend ? "UP" : is_downtrend ? "DOWN" : "Neutral"
+    table.cell(dashboard, 1, 6, tstat, text_color=is_uptrend ? color.lime : is_downtrend ? color.red : color.gray, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 7, "Breakout", text_color=color.white, text_size=size.tiny)
+    string bstat = bullish_breakout_signal ? "BULL" : bearish_breakout_signal ? "BEAR" : "Wait"
+    color bcolor = bullish_breakout_signal ? color.new(color.green, 50) : bearish_breakout_signal ? color.new(color.red, 50) : na
+    table.cell(dashboard, 1, 7, bstat, bgcolor=bcolor, text_color=color.white, text_size=size.tiny)
+
+// ═════════════════ MCP OUTPUT ═════════════════
+plot(inside_bar_signal ? 1 : 0, "Inside_Bar_Signal", display=display.data_window)
+plot(bullish_breakout_signal ? 1 : 0, "Bullish_Breakout", display=display.data_window)
+plot(bearish_breakout_signal ? 1 : 0, "Bearish_Breakout", display=display.data_window)
+plot(quality_score, "Quality_Score", display=display.data_window)
+plot(mother_high, "Mother_High", display=display.data_window)
+plot(mother_low, "Mother_Low", display=display.data_window)
+plot(bull_entry, "Bull_Entry", display=display.data_window)
+plot(bull_stop, "Bull_Stop", display=display.data_window)
+plot(bear_entry, "Bear_Entry", display=display.data_window)
+plot(bear_stop, "Bear_Stop", display=display.data_window)
+
+// ═════════════════ ALERTS ═════════════════
+high_quality_inside = inside_bar_signal and quality_score >= alert_quality_min
+high_quality_bull_bo = bullish_breakout_signal and quality_score[1] >= alert_quality_min
+high_quality_bear_bo = bearish_breakout_signal and quality_score[1] >= alert_quality_min
+
+alertcondition(high_quality_inside and enable_alerts, title="Inside Bar Detected", message="Inside Bar formed on {{ticker}} {{interval}}")
+alertcondition(high_quality_bull_bo and enable_alerts, title="Bullish Breakout", message="BULLISH breakout on {{ticker}} {{interval}}")
+alertcondition(high_quality_bear_bo and enable_alerts, title="Bearish Breakout", message="BEARISH breakout on {{ticker}} {{interval}}")
+
+// ══════════════════════════════════════════════════════════════════
+// INSIDE BAR PRO - TRADING GUIDE
+//
+// PATTERN STRUCTURE:
+// Mother Bar = Large range bar (1.5x+ average)
+// Inside Bar = Smaller bar completely inside mother bar
+// Breakout = Price breaks above/below mother bar range
+//
+// SIGNALS:
+// Yellow Diamond (IB) = Inside bar detected
+// Green Triangle (BO) = Bullish breakout
+// Red Triangle (BO) = Bearish breakout
+//
+// QUALITY SCORE:
+// 80-100% = Excellent (take all trades)
+// 60-79% = Good (selective trading)
+// 40-59% = Fair (experienced only)
+// Below 40% = Skip
+//
+// TRADING:
+// 1. Wait for inside bar to form
+// 2. Set alerts for breakout
+// 3. Enter on breakout with volume
+// 4. Stop = Opposite side of mother bar
+// 5. Targets = 1x and 1.5x risk
+//
+// BEST CONDITIONS:
+// - Mother bar 2x+ average size
+// - Inside bar tight (under 50% of mother)
+// - Breakout with volume spike
+// - At support/resistance level
+// - In direction of trend
+// ══════════════════════════════════════════════════════════════════

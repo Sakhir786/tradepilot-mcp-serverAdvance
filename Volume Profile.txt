@@ -1,0 +1,277 @@
+//@version=6
+indicator("TradePilot VP Trading System", shorttitle="TP-VP-TRD", overlay=true, max_bars_back=500)
+
+anchor_mode = input.string("Session", "Anchor Mode", options=["Session", "Week", "Month", "Last N Bars"], group="Profile")
+custom_length = input.int(100, "Custom Length", minval=10, maxval=500, group="Profile")
+num_levels = input.int(24, "Number of Levels", minval=10, maxval=50, group="Profile")
+va_percent = input.float(70, "Value Area Percent", minval=50, maxval=90, step=5, group="Profile")
+
+min_volume_mult = input.float(2.0, "Min Volume Multiple", minval=1.0, step=0.1, group="Filters")
+min_touches = input.int(3, "Min Touches Strong Level", minval=2, group="Filters")
+acceptance_bars = input.int(3, "Acceptance Bars", minval=2, group="Filters")
+rejection_wick_pct = input.float(60, "Rejection Wick Percent", minval=40, maxval=80, group="Filters")
+
+show_signals = input.bool(true, "Show Trade Signals", group="Display")
+show_poc = input.bool(true, "Show POC Line", group="Display")
+show_va = input.bool(true, "Show Value Area", group="Display")
+show_profile = input.bool(true, "Show Volume Profile", group="Display")
+
+poc_color = input.color(color.yellow, "POC Color", group="Colors")
+vah_color = input.color(color.green, "VAH Color", group="Colors")
+val_color = input.color(color.red, "VAL Color", group="Colors")
+
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+
+is_new_session = ta.change(time("D")) != 0
+is_new_week = ta.change(time("W")) != 0
+is_new_month = ta.change(time("M")) != 0
+
+var int anchor_bar = 0
+var int bars_since_anchor = 0
+
+if anchor_mode == "Session" and is_new_session
+    anchor_bar := bar_index
+    bars_since_anchor := 1
+else if anchor_mode == "Week" and is_new_week
+    anchor_bar := bar_index
+    bars_since_anchor := 1
+else if anchor_mode == "Month" and is_new_month
+    anchor_bar := bar_index
+    bars_since_anchor := 1
+else if anchor_mode == "Last N Bars"
+    anchor_bar := bar_index - custom_length
+    bars_since_anchor := custom_length
+
+if anchor_bar > 0 and bars_since_anchor > 0
+    bars_since_anchor := bars_since_anchor + 1
+
+range_length = anchor_mode == "Last N Bars" ? custom_length : bars_since_anchor
+range_length := math.max(range_length, 1)
+
+range_high = ta.highest(high, range_length)
+range_low = ta.lowest(low, range_length)
+price_range = range_high - range_low
+level_height = price_range > 0 ? price_range / num_levels : 0
+
+var array<float> volume_at_price = array.new<float>(num_levels, 0.0)
+var array<float> buy_volume_at_price = array.new<float>(num_levels, 0.0)
+
+if (anchor_mode == "Session" and is_new_session) or (anchor_mode == "Week" and is_new_week) or (anchor_mode == "Month" and is_new_month)
+    array.fill(volume_at_price, 0.0)
+    array.fill(buy_volume_at_price, 0.0)
+
+if range_length > 0 and price_range > 0 and level_height > 0
+    price_level = math.floor((close - range_low) / level_height)
+    price_level := math.max(0, math.min(num_levels - 1, price_level))
+    
+    current_vol = array.get(volume_at_price, int(price_level))
+    array.set(volume_at_price, int(price_level), current_vol + volume)
+    
+    if close > open
+        current_buy = array.get(buy_volume_at_price, int(price_level))
+        array.set(buy_volume_at_price, int(price_level), current_buy + volume)
+
+var float poc_price = na
+var int poc_level = 0
+var float max_volume = 0.0
+var float total_volume = 0.0
+
+if barstate.islast and range_length > 1
+    max_volume := 0.0
+    total_volume := 0.0
+    
+    for i = 0 to num_levels - 1
+        vol = array.get(volume_at_price, i)
+        total_volume := total_volume + vol
+        if vol > max_volume
+            max_volume := vol
+            poc_level := i
+    
+    if level_height > 0
+        poc_price := range_low + (poc_level * level_height) + (level_height / 2)
+
+var float vah_price = na
+var float val_price = na
+
+if barstate.islast and range_length > 1 and total_volume > 0
+    va_target = total_volume * (va_percent / 100)
+    va_volume = array.get(volume_at_price, poc_level)
+    
+    va_high_level = poc_level
+    va_low_level = poc_level
+    
+    for i = 0 to num_levels
+        if va_volume >= va_target
+            break
+        
+        vol_above = va_high_level < num_levels - 1 ? array.get(volume_at_price, va_high_level + 1) : 0.0
+        vol_below = va_low_level > 0 ? array.get(volume_at_price, va_low_level - 1) : 0.0
+        
+        if vol_above > vol_below and va_high_level < num_levels - 1
+            va_high_level := va_high_level + 1
+            va_volume := va_volume + vol_above
+        else if vol_below > 0 and va_low_level > 0
+            va_low_level := va_low_level - 1
+            va_volume := va_volume + vol_below
+        else if vol_above > 0 and va_high_level < num_levels - 1
+            va_high_level := va_high_level + 1
+            va_volume := va_volume + vol_above
+        else
+            break
+    
+    if level_height > 0
+        vah_price := range_low + (va_high_level * level_height) + level_height
+        val_price := range_low + (va_low_level * level_height)
+
+avg_volume = ta.sma(volume, 20)
+is_high_volume = volume > avg_volume * min_volume_mult
+volume_spike = volume > avg_volume * (min_volume_mult * 1.5)
+
+var int poc_touches = 0
+var int last_poc_touch_bar = 0
+
+touching_poc = not na(poc_price) and math.abs(close - poc_price) / poc_price < 0.005
+if touching_poc and bar_index - last_poc_touch_bar > 5
+    poc_touches := poc_touches + 1
+    last_poc_touch_bar := bar_index
+
+poc_is_strong = poc_touches >= min_touches
+
+candle_range = high - low
+upper_wick = high - math.max(open, close)
+lower_wick = math.min(open, close) - low
+
+rejection_from_above = candle_range > 0 and (upper_wick / candle_range) * 100 > rejection_wick_pct
+rejection_from_below = candle_range > 0 and (lower_wick / candle_range) * 100 > rejection_wick_pct
+
+poc_rejection_bull = touching_poc and rejection_from_below and close > open
+poc_rejection_bear = touching_poc and rejection_from_above and close < open
+
+var int bars_at_poc = 0
+var int bars_above_vah = 0
+var int bars_below_val = 0
+
+if touching_poc
+    bars_at_poc := bars_at_poc + 1
+else
+    bars_at_poc := 0
+
+if not na(vah_price) and close > vah_price
+    bars_above_vah := bars_above_vah + 1
+else
+    bars_above_vah := 0
+
+if not na(val_price) and close < val_price
+    bars_below_val := bars_below_val + 1
+else
+    bars_below_val := 0
+
+accepted_at_poc = bars_at_poc >= acceptance_bars
+accepted_above_va = bars_above_vah >= acceptance_bars
+accepted_below_va = bars_below_val >= acceptance_bars
+
+current_level = range_length > 0 and price_range > 0 and level_height > 0 ? math.floor((close - range_low) / level_height) : 0
+current_level := math.max(0, math.min(num_levels - 1, current_level))
+
+level_buy_vol = array.get(buy_volume_at_price, int(current_level))
+level_total_vol = array.get(volume_at_price, int(current_level))
+buy_pressure = level_total_vol > 0 ? (level_buy_vol / level_total_vol) * 100 : 50
+
+strong_buying = buy_pressure > 65
+strong_selling = buy_pressure < 35
+
+in_value_area = not na(val_price) and not na(vah_price) and close >= val_price and close <= vah_price
+above_value_area = not na(vah_price) and close > vah_price
+below_value_area = not na(val_price) and close < val_price
+
+long_poc_bounce = poc_rejection_bull and is_high_volume and poc_is_strong and strong_buying
+
+long_val_support = not na(val_price) and math.abs(close - val_price) / val_price < 0.003 and rejection_from_below and is_high_volume and strong_buying
+
+long_breakout = accepted_above_va and not na(vah_price) and ta.crossover(close, vah_price) and volume_spike
+
+short_poc_rejection = poc_rejection_bear and is_high_volume and poc_is_strong and strong_selling
+
+short_vah_resistance = not na(vah_price) and math.abs(close - vah_price) / vah_price < 0.003 and rejection_from_above and is_high_volume and strong_selling
+
+short_breakdown = accepted_below_va and not na(val_price) and ta.crossunder(close, val_price) and volume_spike
+
+long_signal = long_poc_bounce or long_val_support or long_breakout
+short_signal = short_poc_rejection or short_vah_resistance or short_breakdown
+
+plot(show_poc and not na(poc_price) ? poc_price : na, "POC", color=poc_color, linewidth=3)
+plot(show_va and not na(vah_price) ? vah_price : na, "VAH", color=vah_color, linewidth=2)
+plot(show_va and not na(val_price) ? val_price : na, "VAL", color=val_color, linewidth=2)
+
+bgcolor(show_va and in_value_area ? color.new(color.gray, 95) : na)
+bgcolor(is_high_volume ? color.new(color.blue, 97) : na, title="High Volume")
+
+if show_profile and barstate.islast and range_length > 1 and max_volume > 0 and level_height > 0
+    for i = 0 to num_levels - 1
+        vol = array.get(volume_at_price, i)
+        if vol > 0
+            level_price = range_low + (i * level_height) + (level_height / 2)
+            bar_width = math.floor((vol / max_volume) * 30)
+            
+            buy_vol = array.get(buy_volume_at_price, i)
+            buy_ratio = vol > 0 ? buy_vol / vol : 0
+            bar_color = buy_ratio > 0.6 ? color.new(color.green, 70) : buy_ratio < 0.4 ? color.new(color.red, 70) : color.new(color.gray, 70)
+            
+            if bar_width > 0
+                line.new(bar_index - bar_width, level_price, bar_index, level_price, color=bar_color, width=2)
+
+if show_signals and long_signal
+    signal_text = long_poc_bounce ? "POC BOUNCE" : long_val_support ? "VAL SUPPORT" : "BREAKOUT"
+    label.new(bar_index, low, signal_text + "\nLONG", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if show_signals and short_signal
+    signal_text = short_poc_rejection ? "POC REJECT" : short_vah_resistance ? "VAH RESIST" : "BREAKDOWN"
+    label.new(bar_index, high, signal_text + "\nSHORT", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+var table info = table.new(position.bottom_right, 2, 9, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "VP TRADING", text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(info, 1, 0, anchor_mode, text_color=color.yellow, bgcolor=color.new(color.black, 0))
+    
+    table.cell(info, 0, 1, "POC", text_color=color.white)
+    table.cell(info, 1, 1, not na(poc_price) ? str.tostring(poc_price, "#.##") : "N/A", text_color=poc_color)
+    
+    table.cell(info, 0, 2, "POC Touches", text_color=color.white)
+    touch_color = poc_is_strong ? color.green : color.gray
+    table.cell(info, 1, 2, str.tostring(poc_touches), text_color=touch_color)
+    
+    table.cell(info, 0, 3, "Volume", text_color=color.white)
+    vol_color = is_high_volume ? color.green : color.gray
+    vol_text = is_high_volume ? "HIGH" : "NORMAL"
+    table.cell(info, 1, 3, vol_text, text_color=vol_color)
+    
+    table.cell(info, 0, 4, "Buy Pressure", text_color=color.white)
+    bp_color = strong_buying ? color.green : strong_selling ? color.red : color.gray
+    table.cell(info, 1, 4, str.tostring(buy_pressure, "#") + " pct", text_color=bp_color)
+    
+    table.cell(info, 0, 5, "Position", text_color=color.white)
+    pos_text = above_value_area ? "ABOVE VA" : below_value_area ? "BELOW VA" : "IN VA"
+    pos_color = above_value_area ? color.green : below_value_area ? color.red : color.gray
+    table.cell(info, 1, 5, pos_text, text_color=pos_color)
+    
+    table.cell(info, 0, 6, "Acceptance", text_color=color.white)
+    acc_text = accepted_above_va ? "ABOVE" : accepted_below_va ? "BELOW" : accepted_at_poc ? "AT POC" : "NONE"
+    acc_color = accepted_above_va ? color.green : accepted_below_va ? color.red : color.gray
+    table.cell(info, 1, 6, acc_text, text_color=acc_color)
+    
+    table.cell(info, 0, 7, "Rejection", text_color=color.white)
+    rej_text = poc_rejection_bull ? "BULL" : poc_rejection_bear ? "BEAR" : "NONE"
+    rej_color = poc_rejection_bull ? color.green : poc_rejection_bear ? color.red : color.gray
+    table.cell(info, 1, 7, rej_text, text_color=rej_color)
+    
+    table.cell(info, 0, 8, "Signal", text_color=color.white)
+    sig_text = long_signal ? "LONG" : short_signal ? "SHORT" : "NONE"
+    sig_color = long_signal ? color.green : short_signal ? color.red : color.gray
+    table.cell(info, 1, 8, sig_text, text_color=sig_color, bgcolor=color.new(sig_color, 90))
+
+if enable_alerts and long_signal
+    alert("LONG Signal: Volume Profile setup", alert.freq_once_per_bar)
+
+if enable_alerts and short_signal
+    alert("SHORT Signal: Volume Profile setup", alert.freq_once_per_bar)

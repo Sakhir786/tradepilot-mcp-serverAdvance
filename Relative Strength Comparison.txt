@@ -1,0 +1,206 @@
+//@version=6
+indicator("TradePilot Relative Strength", shorttitle="TP-RS", overlay=false)
+
+comparison_symbol = input.symbol("SPX", "Comparison Symbol", group="Basic")
+comparison_period = input.int(50, "Comparison Period", minval=1, maxval=200, group="Basic")
+ma_period = input.int(10, "Moving Average Period", minval=1, maxval=100, group="Basic")
+
+rsc_overbought = input.float(0.15, "Overbought Level", step=0.01, group="Filters")
+rsc_oversold = input.float(-0.15, "Oversold Level", step=0.01, group="Filters")
+momentum_threshold = input.float(0.05, "Momentum Threshold", step=0.01, group="Filters")
+divergence_lookback = input.int(14, "Divergence Lookback", minval=5, maxval=50, group="Filters")
+min_strength_duration = input.int(3, "Min Strength Duration", minval=1, maxval=10, group="Filters")
+
+show_signals = input.bool(true, "Show Trade Signals", group="Display")
+show_divergence = input.bool(true, "Show Divergences", group="Display")
+show_levels = input.bool(true, "Show OB OS Levels", group="Display")
+
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+
+current_close = close
+comparison_close = request.security(comparison_symbol, timeframe.period, close)
+
+current_change = current_close / current_close[comparison_period]
+comparison_change = comparison_close / comparison_close[comparison_period]
+
+rsc = (current_change / comparison_change) - 1
+rsc_ma = ta.sma(rsc, ma_period)
+
+rsc_roc = ta.change(rsc, 5)
+rsc_momentum = ta.sma(rsc_roc, 3)
+
+rsc_bullish = rsc > 0 and rsc > rsc_ma
+rsc_bearish = rsc < 0 and rsc < rsc_ma
+
+rsc_strong_bull = rsc > rsc_overbought and rsc > rsc_ma
+rsc_strong_bear = rsc < rsc_oversold and rsc < rsc_ma
+
+positive_momentum = rsc_momentum > momentum_threshold
+negative_momentum = rsc_momentum < -momentum_threshold
+accelerating = rsc_roc > rsc_roc[1]
+decelerating = rsc_roc < rsc_roc[1]
+
+var int bull_duration = 0
+var int bear_duration = 0
+
+if rsc_bullish
+    bull_duration := bull_duration + 1
+    bear_duration := 0
+else if rsc_bearish
+    bear_duration := bear_duration + 1
+    bull_duration := 0
+else
+    bull_duration := 0
+    bear_duration := 0
+
+strength_confirmed = bull_duration >= min_strength_duration or bear_duration >= min_strength_duration
+bull_confirmed = bull_duration >= min_strength_duration
+bear_confirmed = bear_duration >= min_strength_duration
+
+rsc_cross_above_ma = ta.crossover(rsc, rsc_ma)
+rsc_cross_below_ma = ta.crossunder(rsc, rsc_ma)
+
+cross_above_zero = ta.crossover(rsc, 0)
+cross_below_zero = ta.crossunder(rsc, 0)
+
+is_overbought = rsc > rsc_overbought
+is_oversold = rsc < rsc_oversold
+
+was_overbought = is_overbought[1] and not is_overbought
+was_oversold = is_oversold[1] and not is_oversold
+
+price_ll = ta.pivotlow(close, divergence_lookback, divergence_lookback)
+rsc_pivot_low = ta.pivotlow(rsc, divergence_lookback, divergence_lookback)
+
+var float last_price_low = na
+var float last_rsc_low = na
+var int last_low_bar = 0
+
+bull_divergence = false
+if not na(price_ll) and not na(rsc_pivot_low)
+    if not na(last_price_low)
+        if close < last_price_low and rsc > last_rsc_low
+            bull_divergence := true
+            if show_divergence
+                line.new(last_low_bar, last_rsc_low, bar_index - divergence_lookback, rsc_pivot_low, color=color.green, style=line.style_dashed, width=2)
+    
+    last_price_low := close
+    last_rsc_low := rsc
+    last_low_bar := bar_index - divergence_lookback
+
+price_hh = ta.pivothigh(close, divergence_lookback, divergence_lookback)
+rsc_pivot_high = ta.pivothigh(rsc, divergence_lookback, divergence_lookback)
+
+var float last_price_high = na
+var float last_rsc_high = na
+var int last_high_bar = 0
+
+bear_divergence = false
+if not na(price_hh) and not na(rsc_pivot_high)
+    if not na(last_price_high)
+        if close > last_price_high and rsc < last_rsc_high
+            bear_divergence := true
+            if show_divergence
+                line.new(last_high_bar, last_rsc_high, bar_index - divergence_lookback, rsc_pivot_high, color=color.red, style=line.style_dashed, width=2)
+    
+    last_price_high := close
+    last_rsc_high := rsc
+    last_high_bar := bar_index - divergence_lookback
+
+long_strength = rsc_strong_bull and positive_momentum and bull_confirmed
+long_reversal = was_oversold and rsc_cross_above_ma and positive_momentum
+long_divergence = bull_divergence and positive_momentum
+long_breakout = cross_above_zero and positive_momentum and accelerating
+
+short_weakness = rsc_strong_bear and negative_momentum and bear_confirmed
+short_reversal = was_overbought and rsc_cross_below_ma and negative_momentum
+short_divergence = bear_divergence and negative_momentum
+short_breakdown = cross_below_zero and negative_momentum and decelerating
+
+long_signal = long_strength or long_reversal or long_divergence or long_breakout
+short_signal = short_weakness or short_reversal or short_divergence or short_breakdown
+
+hline(0, "Zero Line", color=color.gray, linestyle=hline.style_solid, linewidth=2)
+hline(show_levels ? rsc_overbought : na, "Overbought", color=color.new(color.red, 70), linestyle=hline.style_dashed)
+hline(show_levels ? rsc_oversold : na, "Oversold", color=color.new(color.green, 70), linestyle=hline.style_dashed)
+
+rsc_color = rsc >= rsc_ma ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(rsc, "RSC", color=rsc_color, linewidth=3)
+plot(rsc_ma, "RSC MA", color=color.new(color.blue, 0), linewidth=2)
+plot(rsc_momentum * 10, "Momentum", color=color.new(color.purple, 50), linewidth=1)
+
+fill_color = rsc >= 0 ? color.new(color.green, 85) : color.new(color.red, 85)
+h1 = plot(rsc, display=display.none)
+h2 = plot(0, display=display.none)
+fill(h1, h2, color=fill_color)
+
+bgcolor(rsc_strong_bull ? color.new(color.green, 95) : na)
+bgcolor(rsc_strong_bear ? color.new(color.red, 95) : na)
+
+plotshape(show_signals and long_signal, "Long", shape.triangleup, location.bottom, color.green, size=size.small)
+plotshape(show_signals and short_signal, "Short", shape.triangledown, location.top, color.red, size=size.small)
+
+var table info = table.new(position.top_right, 2, 10, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "RELATIVE STRENGTH", text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(info, 1, 0, "vs " + comparison_symbol, text_color=color.yellow, bgcolor=color.new(color.black, 0))
+    
+    table.cell(info, 0, 1, "RSC Value", text_color=color.white)
+    rsc_pct = rsc * 100
+    rsc_val_color = rsc > 0 ? color.green : color.red
+    table.cell(info, 1, 1, str.tostring(rsc_pct, "#.##") + " pct", text_color=rsc_val_color)
+    
+    table.cell(info, 0, 2, "Status", text_color=color.white)
+    status_text = rsc_strong_bull ? "STRONG OUT" : rsc_strong_bear ? "STRONG UNDER" : rsc_bullish ? "OUTPERFORM" : rsc_bearish ? "UNDERPERFORM" : "NEUTRAL"
+    status_color = rsc_bullish ? color.green : rsc_bearish ? color.red : color.gray
+    table.cell(info, 1, 2, status_text, text_color=status_color)
+    
+    table.cell(info, 0, 3, "Trend", text_color=color.white)
+    trend_text = rsc > rsc_ma ? "ABOVE MA" : "BELOW MA"
+    trend_color = rsc > rsc_ma ? color.green : color.red
+    table.cell(info, 1, 3, trend_text, text_color=trend_color)
+    
+    table.cell(info, 0, 4, "Momentum", text_color=color.white)
+    mom_text = positive_momentum ? "POSITIVE" : negative_momentum ? "NEGATIVE" : "NEUTRAL"
+    mom_color = positive_momentum ? color.green : negative_momentum ? color.red : color.gray
+    table.cell(info, 1, 4, mom_text, text_color=mom_color)
+    
+    table.cell(info, 0, 5, "Duration", text_color=color.white)
+    dur_val = bull_duration > 0 ? bull_duration : bear_duration
+    dur_color = bull_duration > 0 ? color.green : bear_duration > 0 ? color.red : color.gray
+    table.cell(info, 1, 5, str.tostring(dur_val) + " bars", text_color=dur_color)
+    
+    table.cell(info, 0, 6, "Confirmed", text_color=color.white)
+    conf_text = strength_confirmed ? "YES" : "NO"
+    conf_color = strength_confirmed ? color.green : color.gray
+    table.cell(info, 1, 6, conf_text, text_color=conf_color)
+    
+    table.cell(info, 0, 7, "OB OS", text_color=color.white)
+    obos_text = is_overbought ? "OVERBOUGHT" : is_oversold ? "OVERSOLD" : "NORMAL"
+    obos_color = is_overbought ? color.orange : is_oversold ? color.blue : color.gray
+    table.cell(info, 1, 7, obos_text, text_color=obos_color)
+    
+    table.cell(info, 0, 8, "Divergence", text_color=color.white)
+    div_text = bull_divergence ? "BULLISH" : bear_divergence ? "BEARISH" : "NONE"
+    div_color = bull_divergence ? color.green : bear_divergence ? color.red : color.gray
+    table.cell(info, 1, 8, div_text, text_color=div_color)
+    
+    table.cell(info, 0, 9, "Signal", text_color=color.white)
+    sig_text = long_signal ? "LONG" : short_signal ? "SHORT" : "NONE"
+    sig_color = long_signal ? color.green : short_signal ? color.red : color.gray
+    table.cell(info, 1, 9, sig_text, text_color=sig_color, bgcolor=color.new(sig_color, 90))
+
+if enable_alerts and long_signal
+    signal_type = long_strength ? "Strength" : long_reversal ? "Reversal" : long_divergence ? "Divergence" : "Breakout"
+    alert("LONG Signal: " + signal_type + " - RSC: " + str.tostring(rsc * 100, "#.##") + " pct", alert.freq_once_per_bar)
+
+if enable_alerts and short_signal
+    signal_type = short_weakness ? "Weakness" : short_reversal ? "Reversal" : short_divergence ? "Divergence" : "Breakdown"
+    alert("SHORT Signal: " + signal_type + " - RSC: " + str.tostring(rsc * 100, "#.##") + " pct", alert.freq_once_per_bar)
+
+if enable_alerts and cross_above_zero
+    alert("RSC crossed above zero - Outperforming market", alert.freq_once_per_bar)
+
+if enable_alerts and cross_below_zero
+    alert("RSC crossed below zero - Underperforming market", alert.freq_once_per_bar)

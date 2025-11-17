@@ -1,0 +1,219 @@
+//@version=6
+indicator("Three White Soldiers PRO", shorttitle="3WS PRO", overlay=true)
+
+show_pattern = input.bool(true, "Show Pattern", group="Display")
+min_body_size = input.float(0.4, "Min Body Size", minval=0.2, maxval=2.0, step=0.1, group="Settings")
+max_shadow_size = input.float(0.30, "Max Shadow", minval=0.05, maxval=0.5, step=0.05, group="Settings")
+
+use_volume_filter = input.bool(false, "Volume Filter", group="Filters")
+volume_increase = input.float(1.2, "Volume Factor", minval=1.0, maxval=3.0, step=0.1, group="Filters")
+
+use_trend_filter = input.bool(false, "Trend Filter", group="Filters")
+trend_lookback = input.int(10, "Trend Lookback", minval=5, maxval=50, group="Filters")
+trend_ma_length = input.int(50, "Trend MA", minval=20, group="Filters")
+
+use_support_filter = input.bool(false, "Support Filter", group="Filters")
+support_lookback = input.int(20, "Support Lookback", minval=10, group="Filters")
+support_proximity = input.float(0.05, "Support %", minval=0.01, maxval=0.10, step=0.01, group="Filters")
+
+show_quality_score = input.bool(true, "Show Quality", group="Display")
+min_quality_score = input.int(30, "Min Quality", minval=0, maxval=100, group="Filters")
+
+show_targets = input.bool(true, "Show Targets", group="Display")
+risk_reward_ratio = input.float(2.5, "Risk Reward", minval=1.5, maxval=5.0, step=0.5, group="Display")
+
+enable_alerts = input.bool(true, "Alerts", group="Alerts")
+alert_only_high_quality = input.bool(false, "HQ Only", group="Alerts")
+
+color_signal = input.color(color.new(color.lime, 0), "Signal Color", group="Colors")
+color_high_quality = input.color(color.new(color.aqua, 0), "HQ Color", group="Colors")
+
+body_size = math.abs(close - open)
+avg_body = ta.ema(body_size, 14)
+
+candle1_body = math.abs(close[2] - open[2])
+candle1_high = high[2]
+candle1_low = low[2]
+candle1_open = open[2]
+candle1_close = close[2]
+candle1_bullish = close[2] > open[2]
+candle1_upper_shadow = candle1_high - math.max(candle1_open, candle1_close)
+
+candle2_body = math.abs(close[1] - open[1])
+candle2_high = high[1]
+candle2_low = low[1]
+candle2_open = open[1]
+candle2_close = close[1]
+candle2_bullish = close[1] > open[1]
+candle2_upper_shadow = candle2_high - math.max(candle2_open, candle2_close)
+
+candle3_body = math.abs(close - open)
+candle3_high = high
+candle3_low = low
+candle3_open = open
+candle3_close = close
+candle3_bullish = close > open
+candle3_upper_shadow = candle3_high - math.max(candle3_open, candle3_close)
+
+candle1_long = candle1_body >= (avg_body[2] * min_body_size)
+candle2_long = candle2_body >= (avg_body[1] * min_body_size)
+candle3_long = candle3_body >= (avg_body * min_body_size)
+bodies_long_enough = candle1_long and candle2_long and candle3_long
+
+shadow1_ok = candle1_upper_shadow <= (candle1_body * max_shadow_size)
+shadow2_ok = candle2_upper_shadow <= (candle2_body * max_shadow_size)
+shadow3_ok = candle3_upper_shadow <= (candle3_body * max_shadow_size)
+shadows_small_enough = shadow1_ok and shadow2_ok and shadow3_ok
+
+avg_vol = ta.sma(volume, 20)
+volume_strong = volume >= (avg_vol * volume_increase)
+
+trend_ma = ta.sma(close, trend_ma_length)
+price_was_below = close[trend_lookback] < trend_ma[trend_lookback]
+lower_lows = low[2] < ta.lowest(low[trend_lookback], trend_lookback - 2)
+is_after_downtrend = price_was_below and lower_lows
+
+support_level = ta.lowest(low, support_lookback)
+distance_to_support = (candle1_low - support_level) / candle1_low
+is_near_support = distance_to_support <= support_proximity
+
+safe_candle1_body = math.max(candle1_body, 0.0001)
+safe_candle2_body = math.max(candle2_body, 0.0001)
+safe_candle3_body = math.max(candle3_body, 0.0001)
+
+shadow_ratio_1 = candle1_upper_shadow / safe_candle1_body
+shadow_ratio_2 = candle2_upper_shadow / safe_candle2_body
+shadow_ratio_3 = candle3_upper_shadow / safe_candle3_body
+avg_shadow_ratio = (shadow_ratio_1 + shadow_ratio_2 + shadow_ratio_3) / 3.0
+shadow_quality = 1.0 - math.min(avg_shadow_ratio, 1.0)
+
+body_diff_12 = math.abs(candle1_body - candle2_body)
+body_diff_23 = math.abs(candle2_body - candle3_body)
+total_body = candle1_body + candle2_body + candle3_body
+body_consistency = total_body > 0 ? 1.0 - ((body_diff_12 + body_diff_23) / total_body) : 0.0
+
+float quality_score = 20.0
+
+if use_volume_filter
+    if volume_strong
+        quality_score += 25.0
+else
+    quality_score += 25.0
+
+if use_trend_filter
+    if is_after_downtrend
+        quality_score += 25.0
+else
+    quality_score += 25.0
+
+if use_support_filter
+    if is_near_support
+        quality_score += 15.0
+else
+    quality_score += 15.0
+
+quality_score += (shadow_quality * 10.0)
+quality_score += (body_consistency * 5.0)
+
+all_bullish = candle1_bullish and candle2_bullish and candle3_bullish
+progressive_closes = candle2_close > candle1_close and candle3_close > candle2_close
+opens_in_body_2 = candle2_open > candle1_open and candle2_open < candle1_close
+opens_in_body_3 = candle3_open > candle2_open and candle3_open < candle2_close
+
+pattern_base = all_bullish and progressive_closes and opens_in_body_2 and opens_in_body_3 and bodies_long_enough and shadows_small_enough
+
+volume_ok = not use_volume_filter or volume_strong
+downtrend_ok = not use_trend_filter or is_after_downtrend
+support_ok = not use_support_filter or is_near_support
+
+three_white_soldiers = show_pattern and pattern_base and volume_ok and downtrend_ok and support_ok and quality_score >= min_quality_score
+
+entry_price = candle3_close
+stop_loss = math.min(candle1_low, candle2_low, candle3_low)
+risk_amount = entry_price - stop_loss
+target1 = entry_price + (risk_amount * risk_reward_ratio)
+target2 = entry_price + (risk_amount * risk_reward_ratio * 1.5)
+
+high_quality = three_white_soldiers and quality_score >= 80
+med_quality = three_white_soldiers and quality_score < 80
+
+plotshape(high_quality, title="3WS High", style=shape.triangleup, location=location.belowbar, color=color_high_quality, size=size.normal, text="3WS*")
+plotshape(med_quality, title="3WS Med", style=shape.triangleup, location=location.belowbar, color=color_signal, size=size.small, text="3WS")
+
+bgcolor(three_white_soldiers ? color.new(color.lime, 90) : na, offset=-2)
+bgcolor(three_white_soldiers ? color.new(color.lime, 90) : na, offset=-1)
+bgcolor(three_white_soldiers ? color.new(color.lime, 90) : na)
+
+var line entry_line = na
+var line stop_line = na
+var line target1_line = na
+var line target2_line = na
+var label entry_label = na
+var label stop_label = na
+var label target1_label = na
+var label target2_label = na
+
+if three_white_soldiers and show_targets
+    line.delete(entry_line)
+    line.delete(stop_line)
+    line.delete(target1_line)
+    line.delete(target2_line)
+    label.delete(entry_label)
+    label.delete(stop_label)
+    label.delete(target1_label)
+    label.delete(target2_label)
+    
+    entry_line := line.new(bar_index, entry_price, bar_index + 15, entry_price, color=color.blue, style=line.style_solid, width=2)
+    stop_line := line.new(bar_index, stop_loss, bar_index + 15, stop_loss, color=color.red, style=line.style_solid, width=2)
+    target1_line := line.new(bar_index, target1, bar_index + 15, target1, color=color.green, style=line.style_dashed, width=1)
+    target2_line := line.new(bar_index, target2, bar_index + 15, target2, color=color.lime, style=line.style_dashed, width=1)
+    
+    entry_label := label.new(bar_index + 15, entry_price, "ENTRY", style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.small)
+    stop_label := label.new(bar_index + 15, stop_loss, "STOP", style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+    target1_label := label.new(bar_index + 15, target1, "T1", style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny)
+    target2_label := label.new(bar_index + 15, target2, "T2", style=label.style_label_left, color=color.lime, textcolor=color.white, size=size.tiny)
+
+var table dashboard = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 10), frame_color=color.white, frame_width=1)
+
+if barstate.islast
+    table.cell(dashboard, 0, 0, "3 White Soldiers", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=size.small)
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    
+    table.cell(dashboard, 0, 1, "Pattern", text_color=color.white, text_size=size.tiny)
+    string ptext = three_white_soldiers ? "ON" : "OFF"
+    color pbg = three_white_soldiers ? color.new(color.lime, 50) : na
+    table.cell(dashboard, 1, 1, ptext, bgcolor=pbg, text_color=color.white, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 2, "Quality", text_color=color.white, text_size=size.tiny)
+    table.cell(dashboard, 1, 2, str.tostring(math.round(quality_score)), text_color=color.yellow, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 3, "Volume", text_color=color.white, text_size=size.tiny)
+    string vtext = volume_strong ? "YES" : "NO"
+    table.cell(dashboard, 1, 3, vtext, text_color=volume_strong ? color.lime : color.red, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 4, "Trend", text_color=color.white, text_size=size.tiny)
+    string ttext = is_after_downtrend ? "YES" : "NO"
+    table.cell(dashboard, 1, 4, ttext, text_color=is_after_downtrend ? color.lime : color.red, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 5, "Support", text_color=color.white, text_size=size.tiny)
+    string stext = is_near_support ? "YES" : "NO"
+    table.cell(dashboard, 1, 5, stext, text_color=is_near_support ? color.lime : color.red, text_size=size.tiny)
+    
+    table.cell(dashboard, 0, 6, "Base", text_color=color.white, text_size=size.tiny)
+    string btext = pattern_base ? "YES" : "NO"
+    table.cell(dashboard, 1, 6, btext, text_color=pattern_base ? color.lime : color.red, text_size=size.tiny)
+
+plot(three_white_soldiers ? 1 : 0, "Signal", display=display.data_window)
+plot(high_quality ? 1 : 0, "HQ", display=display.data_window)
+plot(med_quality ? 1 : 0, "MQ", display=display.data_window)
+plot(quality_score, "Quality", display=display.data_window)
+plot(pattern_base ? 1 : 0, "Base", display=display.data_window)
+plot(entry_price, "Entry", display=display.data_window)
+plot(stop_loss, "Stop", display=display.data_window)
+plot(target1, "T1", display=display.data_window)
+plot(target2, "T2", display=display.data_window)
+
+alert_condition = three_white_soldiers and (not alert_only_high_quality or quality_score >= 80)
+
+alertcondition(alert_condition, title="3WS", message="3WS Pattern Detected")
+alertcondition(high_quality, title="3WS HQ", message="High Quality 3WS")

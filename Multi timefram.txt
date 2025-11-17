@@ -1,0 +1,214 @@
+//@version=6
+indicator("TradePilot MTF Alignment Pro - Layer 9", shorttitle="TP-MTF-L9", overlay=true)
+
+// ═════════════════ INPUTS ═════════════════
+tf_5m = input.timeframe("5", "5 Minute TF", group="Timeframes")
+tf_15m = input.timeframe("15", "15 Minute TF", group="Timeframes")
+tf_1h = input.timeframe("60", "1 Hour TF", group="Timeframes")
+tf_4h = input.timeframe("240", "4 Hour TF", group="Timeframes")
+tf_daily = input.timeframe("D", "Daily TF", group="Timeframes")
+
+weight_5m = input.int(25, "5m Weight %", minval=0, maxval=100, group="Weights")
+weight_15m = input.int(25, "15m Weight %", minval=0, maxval=100, group="Weights")
+weight_1h = input.int(25, "1h Weight %", minval=0, maxval=100, group="Weights")
+weight_4h = input.int(15, "4h Weight %", minval=0, maxval=100, group="Weights")
+weight_daily = input.int(10, "Daily Weight %", minval=0, maxval=100, group="Weights")
+
+show_5m = input.bool(true, "Show 5m", group="Display")
+show_15m = input.bool(true, "Show 15m", group="Display")
+show_1h = input.bool(true, "Show 1h", group="Display")
+show_4h = input.bool(true, "Show 4h", group="Display")
+show_daily = input.bool(true, "Show Daily", group="Display")
+
+st_factor = input.float(3.0, "SuperTrend Factor", minval=0.1, step=0.1, group="SuperTrend")
+st_period = input.int(10, "SuperTrend Period", minval=1, group="SuperTrend")
+
+adx_len = input.int(14, "ADX Length", minval=1, group="ADX")
+adx_threshold = input.int(20, "ADX Threshold", minval=1, group="ADX")
+use_adx_filter = input.bool(false, "Use ADX Filter", group="ADX", tooltip="Turn OFF for initial testing")
+
+table_position = input.string("top_right", "Dashboard Position", options=["top_left", "top_right", "bottom_right"], group="Dashboard")
+table_size = input.string("small", "Dashboard Size", options=["tiny", "small", "normal"], group="Dashboard")
+
+color_bull = input.color(color.green, "Bullish Color", group="Colors")
+color_bear = input.color(color.red, "Bearish Color", group="Colors")
+
+// ═════════════════ FUNCTIONS ═════════════════
+f_supertrend_direction() =>
+    [st, dir] = ta.supertrend(st_factor, st_period)
+    dir < 0 ? 1 : -1
+
+f_adx() =>
+    [plus, minus, adx] = ta.dmi(adx_len, adx_len)
+    adx
+
+// ═════════════════ CURRENT TIMEFRAME ═════════════════
+current_st_dir = f_supertrend_direction()
+current_adx = f_adx()
+
+// Plot current timeframe for debugging
+plot(current_st_dir, "Current_ST_Direction", display=display.data_window)
+plot(current_adx, "Current_ADX", display=display.data_window)
+
+// ═════════════════ MULTI-TIMEFRAME DATA ═════════════════
+// Using simpler approach with explicit security calls
+st_dir_5m = request.security(syminfo.tickerid, tf_5m, f_supertrend_direction(), gaps=barmerge.gaps_off)
+adx_5m = request.security(syminfo.tickerid, tf_5m, f_adx(), gaps=barmerge.gaps_off)
+
+st_dir_15m = request.security(syminfo.tickerid, tf_15m, f_supertrend_direction(), gaps=barmerge.gaps_off)
+adx_15m = request.security(syminfo.tickerid, tf_15m, f_adx(), gaps=barmerge.gaps_off)
+
+st_dir_1h = request.security(syminfo.tickerid, tf_1h, f_supertrend_direction(), gaps=barmerge.gaps_off)
+adx_1h = request.security(syminfo.tickerid, tf_1h, f_adx(), gaps=barmerge.gaps_off)
+
+st_dir_4h = request.security(syminfo.tickerid, tf_4h, f_supertrend_direction(), gaps=barmerge.gaps_off)
+adx_4h = request.security(syminfo.tickerid, tf_4h, f_adx(), gaps=barmerge.gaps_off)
+
+st_dir_daily = request.security(syminfo.tickerid, tf_daily, f_supertrend_direction(), gaps=barmerge.gaps_off)
+adx_daily = request.security(syminfo.tickerid, tf_daily, f_adx(), gaps=barmerge.gaps_off)
+
+// ═════════════════ CALCULATE ALIGNMENT ═════════════════
+calc_alignment() =>
+    float weighted_sum = 0.0
+    float total_weight = 0.0
+    int bulls = 0
+    int bears = 0
+    
+    // 5m
+    if show_5m and not na(st_dir_5m)
+        if st_dir_5m == current_st_dir
+            weighted_sum += weight_5m
+        total_weight += weight_5m
+        if st_dir_5m == 1
+            bulls += 1
+        else
+            bears += 1
+    
+    // 15m
+    if show_15m and not na(st_dir_15m)
+        if st_dir_15m == current_st_dir
+            weighted_sum += weight_15m
+        total_weight += weight_15m
+        if st_dir_15m == 1
+            bulls += 1
+        else
+            bears += 1
+    
+    // 1h
+    if show_1h and not na(st_dir_1h)
+        if st_dir_1h == current_st_dir
+            weighted_sum += weight_1h
+        total_weight += weight_1h
+        if st_dir_1h == 1
+            bulls += 1
+        else
+            bears += 1
+    
+    // 4h
+    if show_4h and not na(st_dir_4h)
+        if st_dir_4h == current_st_dir
+            weighted_sum += weight_4h
+        total_weight += weight_4h
+        if st_dir_4h == 1
+            bulls += 1
+        else
+            bears += 1
+    
+    // Daily
+    if show_daily and not na(st_dir_daily)
+        if st_dir_daily == current_st_dir
+            weighted_sum += weight_daily
+        total_weight += weight_daily
+        if st_dir_daily == 1
+            bulls += 1
+        else
+            bears += 1
+    
+    float score = total_weight > 0 ? (weighted_sum / total_weight) * 100 : 0
+    [score, bulls, bears]
+
+[alignment_score, bull_count, bear_count] = calc_alignment()
+
+// ═════════════════ DASHBOARD ═════════════════
+var table dashboard = na
+
+if barstate.isfirst
+    pos = table_position == "top_left" ? position.top_left : table_position == "top_right" ? position.top_right : position.bottom_right
+    dashboard := table.new(pos, 3, 8, bgcolor=color.new(color.black, 10), frame_color=color.white, frame_width=1)
+
+if barstate.islast and not na(dashboard)
+    sz = table_size == "tiny" ? size.tiny : table_size == "small" ? size.small : size.normal
+    
+    // Header
+    table.cell(dashboard, 0, 0, "TradePilot MTF", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=sz)
+    table.merge_cells(dashboard, 0, 0, 2, 0)
+    
+    // Column Headers
+    table.cell(dashboard, 0, 1, "TF", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=sz)
+    table.cell(dashboard, 1, 1, "Trend", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=sz)
+    table.cell(dashboard, 2, 1, "ADX", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=sz)
+    
+    int r = 2
+    
+    // 5m
+    if show_5m
+        table.cell(dashboard, 0, r, "5m", text_color=color.white, text_size=sz)
+        table.cell(dashboard, 1, r, st_dir_5m == 1 ? "BULL" : "BEAR", bgcolor=color.new(st_dir_5m == 1 ? color_bull : color_bear, 50), text_color=color.white, text_size=sz)
+        table.cell(dashboard, 2, r, str.tostring(math.round(adx_5m)), bgcolor=color.new(adx_5m > adx_threshold ? color.green : color.gray, 70), text_color=color.white, text_size=sz)
+        r += 1
+    
+    // 15m
+    if show_15m
+        table.cell(dashboard, 0, r, "15m", text_color=color.white, text_size=sz)
+        table.cell(dashboard, 1, r, st_dir_15m == 1 ? "BULL" : "BEAR", bgcolor=color.new(st_dir_15m == 1 ? color_bull : color_bear, 50), text_color=color.white, text_size=sz)
+        table.cell(dashboard, 2, r, str.tostring(math.round(adx_15m)), bgcolor=color.new(adx_15m > adx_threshold ? color.green : color.gray, 70), text_color=color.white, text_size=sz)
+        r += 1
+    
+    // 1h
+    if show_1h
+        table.cell(dashboard, 0, r, "1h", text_color=color.white, text_size=sz)
+        table.cell(dashboard, 1, r, st_dir_1h == 1 ? "BULL" : "BEAR", bgcolor=color.new(st_dir_1h == 1 ? color_bull : color_bear, 50), text_color=color.white, text_size=sz)
+        table.cell(dashboard, 2, r, str.tostring(math.round(adx_1h)), bgcolor=color.new(adx_1h > adx_threshold ? color.green : color.gray, 70), text_color=color.white, text_size=sz)
+        r += 1
+    
+    // 4h
+    if show_4h
+        table.cell(dashboard, 0, r, "4h", text_color=color.white, text_size=sz)
+        table.cell(dashboard, 1, r, st_dir_4h == 1 ? "BULL" : "BEAR", bgcolor=color.new(st_dir_4h == 1 ? color_bull : color_bear, 50), text_color=color.white, text_size=sz)
+        table.cell(dashboard, 2, r, str.tostring(math.round(adx_4h)), bgcolor=color.new(adx_4h > adx_threshold ? color.green : color.gray, 70), text_color=color.white, text_size=sz)
+        r += 1
+    
+    // Daily
+    if show_daily
+        table.cell(dashboard, 0, r, "1D", text_color=color.white, text_size=sz)
+        table.cell(dashboard, 1, r, st_dir_daily == 1 ? "BULL" : "BEAR", bgcolor=color.new(st_dir_daily == 1 ? color_bull : color_bear, 50), text_color=color.white, text_size=sz)
+        table.cell(dashboard, 2, r, str.tostring(math.round(adx_daily)), bgcolor=color.new(adx_daily > adx_threshold ? color.green : color.gray, 70), text_color=color.white, text_size=sz)
+        r += 1
+    
+    // Alignment Score
+    color score_col = alignment_score >= 80 ? color.green : alignment_score >= 60 ? color.yellow : alignment_score >= 40 ? color.orange : color.red
+    table.cell(dashboard, 0, r, "SCORE", bgcolor=color.new(color.blue, 30), text_color=color.white, text_size=sz)
+    table.cell(dashboard, 1, r, str.tostring(math.round(alignment_score)) + "%", bgcolor=color.new(score_col, 50), text_color=color.white, text_size=sz)
+    table.merge_cells(dashboard, 1, r, 2, r)
+
+// ═════════════════ MCP OUTPUT PLOTS ═════════════════
+plot(alignment_score, "Alignment_Score", display=display.data_window)
+plot(bull_count, "Bullish_Count", display=display.data_window)
+plot(bear_count, "Bearish_Count", display=display.data_window)
+
+// Confidence adjustment
+conf_adj = alignment_score >= 80 ? 20 : alignment_score >= 60 ? 10 : alignment_score >= 40 ? 0 : alignment_score >= 20 ? -10 : -20
+plot(conf_adj, "Confidence_Adj", display=display.data_window)
+
+// ═════════════════ VISUAL INDICATOR ═════════════════
+// Show alignment as background color
+bg_col = alignment_score >= 80 ? color.new(color.green, 95) : alignment_score >= 60 ? color.new(color.yellow, 95) : alignment_score >= 40 ? color.new(color.orange, 95) : color.new(color.red, 95)
+bgcolor(bg_col, title="Alignment Background")
+
+// Show SuperTrend on chart
+[st_line, st_dir] = ta.supertrend(st_factor, st_period)
+plot(st_line, "SuperTrend", color=st_dir < 0 ? color.green : color.red, linewidth=2)
+
+// ═════════════════ ALERTS ═════════════════
+alertcondition(alignment_score >= 80, "High Alignment", "MTF Alignment >= 80%")
+alertcondition(alignment_score < 40, "Low Alignment", "MTF Alignment < 40%")

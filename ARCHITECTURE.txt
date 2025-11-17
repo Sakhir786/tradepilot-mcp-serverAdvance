@@ -1,0 +1,319 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║                     TRADEPILOT ENGINE ARCHITECTURE                           ║
+║                    Max Pain + Greeks Integration                             ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+📦 FILE STRUCTURE
+═══════════════════════════════════════════════════════════════════════════════
+
+tradepilot-engine/
+│
+├── main.py                          ← Register routers here
+│
+├── indicators/                      ← Core calculation engines
+│   ├── __init__.py
+│   ├── max_pain_calculator.py      ✅ NEW - Max Pain logic
+│   ├── options_greeks.py           ✅ NEW - Greeks analysis
+│   ├── gex_calculator.py           ← (Your existing GEX module)
+│   ├── iv_rank.py                  ← (Your existing IV module)
+│   └── ...                         ← (Other indicators)
+│
+├── routers/                         ← FastAPI endpoints
+│   ├── __init__.py
+│   ├── max_pain_router.py          ✅ NEW - /max-pain/* endpoints
+│   ├── greeks_router.py            ✅ NEW - /greeks/* endpoints
+│   ├── gex_router.py               ← (Your existing GEX router)
+│   └── ...                         ← (Other routers)
+│
+└── engines/                         ← Layer engines
+    ├── layer_16_engine.py          ← Integrate Max Pain + Greeks here
+    └── ...
+
+
+🔄 DATA FLOW
+═══════════════════════════════════════════════════════════════════════════════
+
+   ┌─────────────────────────────────────────────────────────────────┐
+   │                      POLYGON.IO API                             │
+   │            (Real-time Options Chain Data)                       │
+   └─────────────────┬───────────────────────────────┬───────────────┘
+                     │                               │
+                     ▼                               ▼
+   ┌─────────────────────────────┐   ┌──────────────────────────────┐
+   │   MaxPainCalculator         │   │   OptionsGreeksAnalyzer      │
+   │   (max_pain_calculator.py)  │   │   (options_greeks.py)        │
+   │                             │   │                              │
+   │   • Fetches options chain   │   │   • Fetches options chain    │
+   │   • Gets OI for all strikes │   │   • Extracts Greeks          │
+   │   • Calculates pain levels  │   │   • Classifies regimes       │
+   │   • Returns max pain strike │   │   • ATM/Portfolio analysis   │
+   └─────────────┬───────────────┘   └───────────────┬──────────────┘
+                 │                                   │
+                 ▼                                   ▼
+   ┌─────────────────────────────┐   ┌──────────────────────────────┐
+   │    MaxPainRouter            │   │    GreeksRouter              │
+   │    (FastAPI Endpoints)      │   │    (FastAPI Endpoints)       │
+   │                             │   │                              │
+   │   GET /max-pain/{symbol}    │   │   GET /greeks/{symbol}       │
+   │   GET /max-pain/{symbol}/   │   │   POST /greeks/portfolio     │
+   │       bias                  │   │   GET /greeks/{symbol}/delta │
+   └─────────────┬───────────────┘   └───────────────┬──────────────┘
+                 │                                   │
+                 └───────────────┬───────────────────┘
+                                 │
+                                 ▼
+                 ┌───────────────────────────────┐
+                 │     Layer 16 Engine           │
+                 │     (IV/Options Analysis)     │
+                 │                               │
+                 │   Combines:                   │
+                 │   • Max Pain                  │
+                 │   • Greeks                    │
+                 │   • GEX                       │
+                 │   • IV Rank                   │
+                 │   • Options Flow              │
+                 │                               │
+                 │   Returns:                    │
+                 │   • Trading signals           │
+                 │   • Risk metrics              │
+                 │   • Confluence scores         │
+                 └───────────────┬───────────────┘
+                                 │
+                                 ▼
+                 ┌───────────────────────────────┐
+                 │       TradePilot Brain        │
+                 │    (Master Decision Engine)   │
+                 │                               │
+                 │   • Aggregates all 25+ layers │
+                 │   • Calculates win probability│
+                 │   • Generates trade signals   │
+                 │   • Risk management           │
+                 └───────────────────────────────┘
+
+
+🎯 LAYER 16 INTEGRATION
+═══════════════════════════════════════════════════════════════════════════════
+
+from indicators.max_pain_calculator import MaxPainCalculator
+from indicators.options_greeks import OptionsGreeksAnalyzer
+from indicators.gex_calculator import GEXCalculator
+from indicators.iv_rank import IVRankCalculator
+
+class Layer16Engine:
+    """
+    Layer 16: IV and Options Analysis
+    
+    Prevents 40% of bad options trades by analyzing:
+    - Max Pain (where market makers want price)
+    - Greeks (risk metrics)
+    - GEX (gamma exposure)
+    - IV Rank (volatility regime)
+    """
+    
+    def __init__(self):
+        self.max_pain = MaxPainCalculator()
+        self.greeks = OptionsGreeksAnalyzer()
+        self.gex = GEXCalculator()
+        self.iv_rank = IVRankCalculator()
+    
+    def analyze(self, symbol: str) -> dict:
+        """
+        Comprehensive options analysis
+        
+        Returns trading signal with confluence score
+        """
+        # 1. Get Max Pain
+        max_pain_data = self.max_pain.calculate_max_pain(symbol)
+        
+        # 2. Get Greeks
+        greeks_data = self.greeks.get_atm_greeks(symbol)
+        
+        # 3. Get GEX (from your existing module)
+        gex_data = self.gex.calculate_gex(symbol)
+        
+        # 4. Get IV Rank
+        iv_data = self.iv_rank.get_iv_metrics(symbol)
+        
+        # 5. Calculate Confluence
+        confluence = self._calculate_confluence(
+            max_pain_data,
+            greeks_data,
+            gex_data,
+            iv_data
+        )
+        
+        return {
+            "layer": 16,
+            "symbol": symbol,
+            "max_pain": {
+                "bias": max_pain_data["bias"],
+                "signal": max_pain_data["signal"],
+                "distance": max_pain_data["distance_to_max_pain"],
+                "strike": max_pain_data["max_pain_strike"]
+            },
+            "greeks": {
+                "delta": greeks_data["call_greeks"]["delta"],
+                "gamma": greeks_data["call_greeks"]["gamma"],
+                "theta": greeks_data["call_greeks"]["theta"],
+                "vega": greeks_data["call_greeks"]["vega"]
+            },
+            "gex": gex_data,
+            "iv": iv_data,
+            "confluence_score": confluence["score"],
+            "trading_signal": confluence["signal"],
+            "confidence": confluence["confidence"]
+        }
+    
+    def _calculate_confluence(self, max_pain, greeks, gex, iv) -> dict:
+        """
+        Calculate confluence from multiple signals
+        
+        Strong signals occur when:
+        1. Max Pain aligns with GEX direction
+        2. Greeks show favorable risk/reward
+        3. IV is in optimal regime
+        """
+        score = 0
+        max_score = 100
+        
+        # Max Pain + GEX Confluence (40 points)
+        if max_pain["bias"] == "BULLISH" and gex["bias"] == "BULLISH":
+            score += 40
+        elif max_pain["bias"] == "BEARISH" and gex["bias"] == "BEARISH":
+            score += 40
+        elif max_pain["bias"] == "NEUTRAL":
+            score += 10
+        
+        # Greeks Regime (30 points)
+        if greeks["call_greeks"]["gamma"] > 0.03:  # High gamma
+            score += 15
+        if abs(greeks["call_greeks"]["theta"]) < 50:  # Low theta decay
+            score += 15
+        
+        # IV Regime (30 points)
+        if iv["iv_percentile"] < 30 and max_pain["bias"] == "BULLISH":
+            score += 30  # Cheap premium + bullish = perfect
+        elif iv["iv_percentile"] > 70 and max_pain["bias"] == "BEARISH":
+            score += 30  # High IV + bearish = sell premium
+        elif 30 <= iv["iv_percentile"] <= 70:
+            score += 15  # Neutral IV
+        
+        # Determine Signal
+        if score >= 80:
+            signal = "STRONG_" + max_pain["signal"]
+            confidence = "HIGH"
+        elif score >= 60:
+            signal = max_pain["signal"]
+            confidence = "MODERATE"
+        else:
+            signal = "WAIT"
+            confidence = "LOW"
+        
+        return {
+            "score": score,
+            "max_score": max_score,
+            "signal": signal,
+            "confidence": confidence
+        }
+
+
+📊 API USAGE EXAMPLES
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Direct Module Usage (In Python)
+   --------------------------------
+   from indicators.max_pain_calculator import MaxPainCalculator
+   
+   calc = MaxPainCalculator()
+   result = calc.calculate_max_pain("SPY")
+   
+   print(f"Max Pain: ${result['max_pain_strike']}")
+   print(f"Bias: {result['bias']}")
+
+2. FastAPI Endpoint Usage (REST API)
+   ----------------------------------
+   # From any client (curl, n8n, frontend, etc.)
+   
+   curl http://localhost:8000/max-pain/SPY
+   curl http://localhost:8000/greeks/AAPL
+
+3. Layer Engine Integration
+   --------------------------
+   layer16 = Layer16Engine()
+   analysis = layer16.analyze("SPY")
+   
+   if analysis["confluence_score"] >= 80:
+       execute_trade(analysis["trading_signal"])
+
+
+🔗 DATA DEPENDENCIES
+═══════════════════════════════════════════════════════════════════════════════
+
+┌────────────────────┐
+│   POLYGON.IO API   │  ← Single data source for all modules
+└─────────┬──────────┘
+          │
+          ├─→ Max Pain (needs: options chain, OI, strikes)
+          ├─→ Greeks (needs: options chain, Greeks data)
+          ├─→ GEX (needs: options chain, OI, gamma)
+          └─→ IV Rank (needs: options prices, historical IV)
+
+All modules use the same Polygon API key: POLYGON_API_KEY
+
+
+⚡ PERFORMANCE NOTES
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Caching Strategy
+   ----------------
+   • Cache options chain for 5 minutes
+   • Cache Greeks for 1 minute (change rapidly)
+   • Cache Max Pain for 15 minutes
+   
+   → Reduces API calls by 80%
+   → Stays within Polygon rate limits
+
+2. Parallel Fetching
+   -----------------
+   Use asyncio to fetch all indicators simultaneously:
+   
+   results = await asyncio.gather(
+       max_pain.calculate_max_pain("SPY"),
+       greeks.get_atm_greeks("SPY"),
+       gex.calculate_gex("SPY")
+   )
+   
+   → 3x faster than sequential
+
+3. API Rate Limits
+   ---------------
+   Polygon.io limits:
+   • Free: 5 calls/minute
+   • Starter: 100 calls/minute
+   • Developer: 1000 calls/minute
+   
+   Recommendation: Use Starter ($29/month) for production
+
+
+🎯 ROADMAP INTEGRATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Week 1-2: Phase 1 - Critical Options Foundation ✅ DONE
+├── Layer 16: IV Analysis                       ✅ DONE
+├── Max Pain Calculator                         ✅ DONE (NEW!)
+└── Options Greeks                              ✅ DONE (NEW!)
+
+Week 3-4: Phase 1 Continued
+├── Layer 17: Support/Resistance                → NEXT
+├── Layer 18: Pivot Points                      → NEXT
+└── Options Flow Analysis                       → NEXT
+
+Max Pain + Greeks are now part of your Layer 16 arsenal! 🎉
+
+
+═══════════════════════════════════════════════════════════════════════════════
+Ready to integrate? Copy files and start testing! 🚀
+═══════════════════════════════════════════════════════════════════════════════

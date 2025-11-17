@@ -1,0 +1,32 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © capriole_charles
+
+//@version=4
+study("Put Call Ratio (Capriole Investments)")
+
+len = input(200,"Lookback period in Days")
+mult = input(1.5,"Standard Deviation Multiple")
+
+pcc = security("USI:PCC","D",close)
+
+ma = sma(pcc,len)
+sd = stdev(pcc,len)
+bu = ma + mult*sd
+bl = ma - mult*sd
+
+buy = pcc>bu
+sell= pcc<bl
+
+plot(pcc)
+plot(ma,color=color.new(color.gray,50))
+plot(bu,color=color.new(color.green,50))
+plot(bl,color=color.new(color.red,50))
+plot(1,color=color.black,title='Equal @ 1')
+
+bgcolor(buy?color.new(color.green,50):na)
+bgcolor(sell?color.new(color.red,50):na)
+
+// Sourcing
+var table_source = table(na)
+table_source := table.new(position=position.bottom_left, columns=1, rows=1, bgcolor=color.white, border_width=1)
+table.cell(table_source, 0, 0, text="Source: Capriole Investments Limited", bgcolor=color.white, text_color=color.black, width=20, height=7, text_size=size.normal, text_halign=text.align_left)

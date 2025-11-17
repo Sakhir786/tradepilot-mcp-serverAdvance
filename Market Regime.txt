@@ -1,0 +1,328 @@
+//@version=6
+indicator("Market Regime Matrix [Debug ON]", overlay=true)
+
+// <=== OPTIMIZED CORE SETTINGS ===>
+adx_length = input.int(14, title="ADX Length", group="Core Engine")
+di_length = input.int(14, title="DI Length", group="Core Engine")
+adx_trend_threshold = input.float(20, title="ADX Trend Threshold", step=1.0, group="Core Engine", tooltip="ADX above this = trending market")
+adx_chop_threshold = input.float(25, title="ADX Chop Threshold", step=1.0, group="Core Engine", tooltip="ADX below this = maximum chop conviction")
+
+ema_length = input.int(50, title="Long EMA Length", group="Core Engine")
+roc_length = input.int(10, title="ROC Length", group="Core Engine")
+crash_threshold = input.float(-5.0, title="Crash Threshold (%)", step=0.5, group="Core Engine")
+
+bb_length = input.int(20, title="Bollinger Band Length", group="Core Engine")
+bb_mult = input.float(2.0, title="BB Standard Deviation", step=0.1, group="Core Engine")
+low_volatility_threshold = input.float(0.015, title="Low Volatility Threshold", step=0.005, group="Core Engine")
+
+score_smoothing_period = input.int(2, title="Score Smoothing Period", group="Superior Engine", tooltip="Smooth raw scores to reduce noise")
+
+use_duration_filter = input.bool(true, title="Use Duration Filter", group="Superior Engine", tooltip="Require minimum regime duration for stability")
+min_regime_duration = input.int(3, title="Minimum Regime Duration", group="Superior Engine", tooltip="Bars required before regime change")
+
+decision_margin = input.float(0.5, title="Decision Margin", step=0.1, group="Superior Engine", tooltip="Minimum score difference for regime change")
+
+use_structure_filter = input.bool(true, title="Use Structure Filter", group="Expert Panel", tooltip="Require favorable market structure for max conviction")
+zigzag_deviation = input.float(1.5, title="Zig Zag Deviation %", step=0.5, group="Expert Panel", tooltip="Minimum price move to register new pivot")
+structure_lookback = input.int(5, title="Structure Lookback", group="Expert Panel", tooltip="Bars to look back for structure analysis")
+
+uptrendColor = input.color(color.rgb(0, 255, 127), "Bull Color", group="Visual")
+downtrendColor = input.color(color.rgb(255, 69, 0), "Bear Color", group="Visual") 
+chopColor = input.color(color.rgb(128, 128, 128), "Chop Color", group="Visual")
+
+show_debug = input.bool(true, title="Show Debug Info", group="Debug")
+
+// <=== DATA COLLECTION ===>
+[plus_di, minus_di, adx_value] = ta.dmi(di_length, adx_length)
+long_ema = ta.ema(close, ema_length)
+roc_value = ta.roc(close, roc_length)
+
+bb_basis = ta.sma(close, bb_length)
+bb_dev = bb_mult * ta.stdev(close, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+bb_width = (bb_upper - bb_lower) / bb_basis
+
+zigzag_high = ta.pivothigh(high, structure_lookback, structure_lookback)
+zigzag_low = ta.pivotlow(low, structure_lookback, structure_lookback)
+
+var float last_significant_high = na
+var float last_significant_low = na
+var float prev_significant_high = na
+var float prev_significant_low = na
+
+if not na(zigzag_high)
+    price_change_pct = math.abs((zigzag_high - nz(last_significant_high, zigzag_high)) / nz(last_significant_high, zigzag_high)) * 100
+    if na(last_significant_high) or price_change_pct >= zigzag_deviation
+        prev_significant_high := last_significant_high
+        last_significant_high := zigzag_high
+
+if not na(zigzag_low)
+    price_change_pct = math.abs((zigzag_low - nz(last_significant_low, zigzag_low)) / nz(last_significant_low, zigzag_low)) * 100
+    if na(last_significant_low) or price_change_pct >= zigzag_deviation
+        prev_significant_low := last_significant_low
+        last_significant_low := zigzag_low
+
+isBullStructure = not na(last_significant_high) and not na(prev_significant_high) and 
+                  not na(last_significant_low) and not na(prev_significant_low) and
+                  last_significant_high > prev_significant_high and last_significant_low > prev_significant_low
+
+isBearStructure = not na(last_significant_high) and not na(prev_significant_high) and
+                  not na(last_significant_low) and not na(prev_significant_low) and
+                  last_significant_low < prev_significant_low and last_significant_high < prev_significant_high
+
+// <=== CORE SCORING ===>
+var float raw_bullScore = 0.0
+var float raw_bearScore = 0.0
+var float raw_chopScore = 0.0
+
+raw_bullScore := 0.0
+raw_bearScore := 0.0
+raw_chopScore := 0.0
+
+is_trending = adx_value > adx_trend_threshold
+is_ranging = adx_value <= adx_trend_threshold
+is_maximum_chop = adx_value <= adx_chop_threshold
+
+if is_ranging
+    raw_chopScore := 3.0
+    
+    if is_maximum_chop
+        raw_chopScore := 5.0
+    
+    if bb_width < low_volatility_threshold
+        raw_chopScore := raw_chopScore + 1.0
+
+if is_trending
+    price_above_ema = close > long_ema
+    price_below_ema = close < long_ema
+    di_bullish = plus_di > minus_di
+    di_bearish = minus_di > plus_di
+    
+    if price_above_ema and di_bullish
+        if use_structure_filter and isBullStructure
+            raw_bullScore := 5.0  
+        else if use_structure_filter and not isBullStructure
+            raw_bullScore := 3.5
+        else
+            raw_bullScore := 4.5  
+    else if price_above_ema
+        if use_structure_filter and isBullStructure
+            raw_bullScore := 4.0
+        else if use_structure_filter and not isBullStructure
+            raw_bullScore := 2.5
+        else
+            raw_bullScore := 3.5
+    else if di_bullish
+        if use_structure_filter and isBullStructure
+            raw_bullScore := 3.0
+        else if use_structure_filter and not isBullStructure
+            raw_bullScore := 2.0
+        else
+            raw_bullScore := 2.5
+    
+    if price_below_ema and di_bearish
+        if use_structure_filter and isBearStructure
+            raw_bearScore := 5.0  
+        else if use_structure_filter and not isBearStructure
+            raw_bearScore := 3.5
+        else
+            raw_bearScore := 4.5  
+    else if price_below_ema
+        if use_structure_filter and isBearStructure
+            raw_bearScore := 4.0
+        else if use_structure_filter and not isBearStructure
+            raw_bearScore := 2.5
+        else
+            raw_bearScore := 3.5
+    else if di_bearish
+        if use_structure_filter and isBearStructure
+            raw_bearScore := 3.0
+        else if use_structure_filter and not isBearStructure
+            raw_bearScore := 2.0
+        else
+            raw_bearScore := 2.5
+
+is_crash = roc_value < crash_threshold
+if is_crash
+    crash_severity = math.abs(roc_value / crash_threshold)
+    crash_bonus = 4.0 + (crash_severity - 1.0) * 2.0
+    
+    raw_bearScore := math.max(raw_bearScore, crash_bonus)
+    raw_bullScore := -5.0  
+    raw_chopScore := -5.0  
+
+smooth_bullScore = ta.sma(raw_bullScore, score_smoothing_period)
+smooth_bearScore = ta.sma(raw_bearScore, score_smoothing_period)
+smooth_chopScore = ta.sma(raw_chopScore, score_smoothing_period)
+
+highest_score = math.max(smooth_bullScore, math.max(smooth_bearScore, smooth_chopScore))
+
+var string raw_regime = "CHOP"
+var string previous_raw_regime = "CHOP"
+
+previous_raw_regime := raw_regime[1]
+
+if smooth_bullScore == highest_score and smooth_bullScore > (math.max(smooth_bearScore, smooth_chopScore) + decision_margin)
+    raw_regime := "BULL"
+else if smooth_bearScore == highest_score and smooth_bearScore > (math.max(smooth_bullScore, smooth_chopScore) + decision_margin)
+    raw_regime := "BEAR"
+else if smooth_chopScore == highest_score and smooth_chopScore > (math.max(smooth_bullScore, smooth_bearScore) + decision_margin)
+    raw_regime := "CHOP"
+else
+    raw_regime := previous_raw_regime
+
+var string final_regime = "CHOP"
+var int regime_stability_count = 0
+
+if use_duration_filter
+    if raw_regime == raw_regime[1]
+        regime_stability_count := regime_stability_count[1] + 1
+    else
+        regime_stability_count := 1
+    
+    if regime_stability_count >= min_regime_duration
+        final_regime := raw_regime
+    else
+        final_regime := final_regime[1]  
+else
+    final_regime := raw_regime
+
+regime_changed = final_regime != final_regime[1]
+regime_color = final_regime == "BULL" ? uptrendColor : final_regime == "BEAR" ? downtrendColor : chopColor
+
+bgcolor(color.new(regime_color, 90), title="Regime Background")
+
+conviction_level = highest_score >= 4.5 ? "MAXIMUM" : highest_score >= 3.5 ? "HIGH" : highest_score >= 2.5 ? "MEDIUM" : highest_score >= 1.5 ? "LOW" : "UNCERTAIN"
+conviction_color = highest_score >= 4.5 ? color.green : highest_score >= 3.5 ? color.lime : highest_score >= 2.5 ? color.yellow : color.orange
+
+is_tradeable = (final_regime == "BULL" or final_regime == "BEAR") and highest_score >= 3.0 and regime_stability_count >= min_regime_duration
+
+// <=== PLOTS - ALWAYS VISIBLE ===>
+plot(smooth_bullScore, title="Smooth Bull Score", color=color.new(uptrendColor, 0), linewidth=3)
+plot(smooth_bearScore, title="Smooth Bear Score", color=color.new(downtrendColor, 0), linewidth=3)
+plot(smooth_chopScore, title="Smooth Chop Score", color=color.new(chopColor, 0), linewidth=3)
+
+plot(raw_bullScore, title="Raw Bull Score", color=color.new(uptrendColor, 60), linewidth=1, style=plot.style_circles)
+plot(raw_bearScore, title="Raw Bear Score", color=color.new(downtrendColor, 60), linewidth=1, style=plot.style_circles)
+plot(raw_chopScore, title="Raw Chop Score", color=color.new(chopColor, 60), linewidth=1, style=plot.style_circles)
+
+plot(isBullStructure ? 6 : na, title="Bull Structure", color=color.green, linewidth=2, style=plot.style_cross)
+plot(isBearStructure ? -6 : na, title="Bear Structure", color=color.red, linewidth=2, style=plot.style_cross)
+
+raw_regime_numeric = raw_regime == "BULL" ? 7 : raw_regime == "BEAR" ? -7 : 0
+final_regime_numeric = final_regime == "BULL" ? 8 : final_regime == "BEAR" ? -8 : 0
+plot(raw_regime_numeric, title="Raw Regime", color=color.gray, linewidth=2, style=plot.style_stepline)
+plot(final_regime_numeric, title="Final Regime", color=color.white, linewidth=4, style=plot.style_stepline)
+
+hline(0, title="Zero Line", color=color.gray, linestyle=hline.style_solid)
+hline(5, title="Max Score", color=color.white, linestyle=hline.style_dotted)
+hline(-5, title="Penalty Line", color=color.red, linestyle=hline.style_dotted)
+hline(3, title="Trade Threshold", color=color.yellow, linestyle=hline.style_dashed)
+
+plotcandle(open, high, low, close, title="Regime Candles", color=regime_color, wickcolor=regime_color, bordercolor=regime_color, force_overlay=true)
+
+// <=== INFORMATION TABLE ===>
+var table info_table = table.new(position.top_right, columns=2, rows=20, border_width=1, bgcolor=color.new(#000000, 0), frame_color=color.gray)
+
+if barstate.islast
+    table.cell(info_table, 0, 0, "Market Regime [Debug ON]", text_color=color.white, text_size=size.large, bgcolor=color.new(#000000, 0))
+    table.cell(info_table, 1, 0, "", bgcolor=color.new(#000000, 0))
+    
+    table.cell(info_table, 0, 1, "Raw Signal:", text_color=color.rgb(255, 255, 255), text_size=size.normal)
+    raw_regime_color = raw_regime == "BULL" ? uptrendColor : raw_regime == "BEAR" ? downtrendColor : chopColor
+    table.cell(info_table, 1, 1, raw_regime, text_color=raw_regime_color, text_size=size.normal)
+    
+    table.cell(info_table, 0, 2, "Final Regime:", text_color=color.white)
+    duration_status = use_duration_filter ? (regime_stability_count >= min_regime_duration ? " ✓" : " ⏳" + str.tostring(regime_stability_count)) : ""
+    table.cell(info_table, 1, 2, final_regime + duration_status, text_color=regime_color, text_size=size.normal, bgcolor=color.new(regime_color, 80))
+    
+    table.cell(info_table, 0, 3, "Tradeable:", text_color=color.white)
+    trade_status = is_tradeable ? "YES ✓" : "NO"
+    trade_color = is_tradeable ? color.green : color.red
+    table.cell(info_table, 1, 3, trade_status, text_color=trade_color, text_size=size.normal, bgcolor=color.new(trade_color, 85))
+    
+    table.cell(info_table, 0, 4, "Score Smoothing:", text_color=color.white)
+    table.cell(info_table, 1, 4, str.tostring(score_smoothing_period) + " bars", text_color=color.yellow, text_size=size.small)
+    
+    table.cell(info_table, 0, 5, "Duration Filter:", text_color=color.white)
+    if use_duration_filter
+        table.cell(info_table, 1, 5, "ON (" + str.tostring(min_regime_duration) + ")", text_color=color.yellow, text_size=size.small)
+    else
+        table.cell(info_table, 1, 5, "OFF", text_color=color.gray, text_size=size.small)
+    
+    table.cell(info_table, 0, 6, "Structure Filter:", text_color=color.white)
+    if use_structure_filter
+        table.cell(info_table, 1, 6, "ON (" + str.tostring(zigzag_deviation, "#.#") + "%)", text_color=color.yellow, text_size=size.small)
+    else
+        table.cell(info_table, 1, 6, "OFF", text_color=color.gray, text_size=size.small)
+    
+    table.cell(info_table, 0, 7, "Bull Structure:", text_color=color.white)
+    table.cell(info_table, 1, 7, isBullStructure ? "HH/HL ✓" : "BROKEN", text_color=isBullStructure ? color.green : color.red, text_size=size.small)
+    
+    table.cell(info_table, 0, 8, "Bear Structure:", text_color=color.white)
+    table.cell(info_table, 1, 8, isBearStructure ? "LL/LH ✓" : "BROKEN", text_color=isBearStructure ? color.red : color.green, text_size=size.small)
+    
+    table.cell(info_table, 0, 9, "Bull Score:", text_color=color.white)
+    table.cell(info_table, 1, 9, str.tostring(smooth_bullScore, "#.#"), text_color=uptrendColor)
+    
+    table.cell(info_table, 0, 10, "Bear Score:", text_color=color.white)
+    table.cell(info_table, 1, 10, str.tostring(smooth_bearScore, "#.#"), text_color=downtrendColor)
+    
+    table.cell(info_table, 0, 11, "Chop Score:", text_color=color.white)
+    table.cell(info_table, 1, 11, str.tostring(smooth_chopScore, "#.#"), text_color=chopColor)
+    
+    table.cell(info_table, 0, 12, "Conviction:", text_color=color.white)
+    table.cell(info_table, 1, 12, conviction_level, text_color=conviction_color)
+    
+    table.cell(info_table, 0, 13, "ADX Value:", text_color=color.white)
+    adx_status = is_maximum_chop ? " MAX CHOP" : is_trending ? " TRENDING" : " RANGING"
+    table.cell(info_table, 1, 13, str.tostring(adx_value, "#.#") + adx_status, text_color=is_trending ? color.green : color.orange)
+    
+    table.cell(info_table, 0, 14, "EMA Trend:", text_color=color.white)
+    ema_trend = close > long_ema ? "BULL" : "BEAR"
+    table.cell(info_table, 1, 14, ema_trend, text_color=close > long_ema ? color.green : color.red)
+    
+    table.cell(info_table, 0, 15, "DI Status:", text_color=color.white)
+    di_status = plus_di > minus_di ? "+DI > -DI" : "-DI > +DI"
+    di_color = plus_di > minus_di ? color.green : color.red
+    table.cell(info_table, 1, 15, di_status, text_color=di_color, text_size=size.small)
+    
+    table.cell(info_table, 0, 16, "ROC (%):", text_color=color.white)
+    roc_status = is_crash ? " CRASH!" : ""
+    table.cell(info_table, 1, 16, str.tostring(roc_value, "#.##") + roc_status, text_color=is_crash ? color.red : roc_value > 0 ? color.green : color.orange)
+    
+    table.cell(info_table, 0, 17, "Volatility:", text_color=color.white)
+    vol_status = bb_width < low_volatility_threshold ? " LOW" : ""
+    table.cell(info_table, 1, 17, str.tostring(bb_width * 100, "#.##") + "%" + vol_status, text_color=bb_width < low_volatility_threshold ? color.blue : color.white)
+    
+    table.cell(info_table, 0, 18, "Decision Margin:", text_color=color.white)
+    table.cell(info_table, 1, 18, str.tostring(decision_margin, "#.#"), text_color=color.yellow)
+    
+    table.cell(info_table, 0, 19, "Status:", text_color=color.white)
+    table.cell(info_table, 1, 19, regime_changed ? "CHANGED" : "STABLE", text_color=regime_changed ? color.yellow : color.green)
+
+// <=== ALERTS ===>
+if regime_changed and barstate.isconfirmed and highest_score >= 2.0
+    engine_info = " | Smooth:" + str.tostring(score_smoothing_period) 
+    duration_info = use_duration_filter ? " | Duration:" + str.tostring(min_regime_duration) : " | Duration:OFF"
+    structure_info = use_structure_filter ? " | Structure:ON" : " | Structure:OFF"
+    bull_struct = isBullStructure ? " | Bull:HH/HL" : " | Bull:BROKEN"
+    bear_struct = isBearStructure ? " | Bear:LL/LH" : " | Bear:BROKEN"
+    tradeable_info = " | Tradeable:" + (is_tradeable ? "YES" : "NO")
+    alert_message = "REGIME CHANGE: " + final_regime + " | Bull:" + str.tostring(smooth_bullScore, "#.#") + " | Bear:" + str.tostring(smooth_bearScore, "#.#") + " | Chop:" + str.tostring(smooth_chopScore, "#.#") + " | Conviction:" + conviction_level + engine_info + duration_info + structure_info + bull_struct + bear_struct + tradeable_info
+    alert(alert_message, alert.freq_once_per_bar)
+
+if is_tradeable and barstate.isconfirmed and regime_changed
+    trade_alert = "TRADEABLE REGIME: " + final_regime + " | Score:" + str.tostring(highest_score, "#.#") + " | Conviction:" + conviction_level
+    alert(trade_alert, alert.freq_once_per_bar)
+
+if is_crash and barstate.isconfirmed
+    crash_severity = math.abs(roc_value / crash_threshold)
+    severity_text = crash_severity >= 2.0 ? "SEVERE" : crash_severity >= 1.5 ? "MAJOR" : "MODERATE"
+    crash_message = "CRASH DETECTED! Severity:" + severity_text + " | ROC:" + str.tostring(roc_value, "#.##") + "%"
+    alert(crash_message, alert.freq_once_per_bar)
+
+if final_regime[1] == "CHOP" and final_regime != "CHOP" and barstate.isconfirmed
+    exit_chop_message = "EXITING CHOP: New Regime = " + final_regime + " | Score:" + str.tostring(highest_score, "#.#")
+    alert(exit_chop_message, alert.freq_once_per_bar)
